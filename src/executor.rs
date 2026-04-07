@@ -6,7 +6,7 @@ use rusqlite::{Connection, params};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
 
@@ -81,6 +81,13 @@ pub fn run_task(conn: &Connection, args: RunArgs, config: &Config) -> Result<(i6
         .stderr(Stdio::piped())
         .spawn()?;
 
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupted_clone = interrupted.clone();
+
+    ctrlc::set_handler(move || {
+        interrupted_clone.store(true, Ordering::SeqCst);
+    }).ok();
+
     let stdout = child.stdout.take().ok_or_else(|| {
         LogexError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -120,6 +127,11 @@ pub fn run_task(conn: &Connection, args: RunArgs, config: &Config) -> Result<(i6
     let live_output = args.live;
 
     loop {
+        if interrupted.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            break;
+        }
+
         match rx.recv_timeout(batch_timeout) {
             Ok((stream, message)) => {
                 if live_output {
@@ -163,7 +175,9 @@ pub fn run_task(conn: &Connection, args: RunArgs, config: &Config) -> Result<(i6
             .map_err(|e| LogexError::TimeFormat(e.to_string()))?
             .timestamp_millis();
     let exit_code = status.code().unwrap_or(-1);
-    let final_status = if status.success() {
+    let final_status = if interrupted.load(Ordering::SeqCst) {
+        TaskStatus::Failed
+    } else if status.success() {
         TaskStatus::Success
     } else {
         TaskStatus::Failed

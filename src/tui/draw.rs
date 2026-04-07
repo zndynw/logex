@@ -120,81 +120,6 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_summary(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let lines = vec![
-        Line::from(vec![
-            Span::raw("Tasks: "),
-            Span::styled(
-                app.dashboard.total.to_string(),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::raw("  Running: "),
-            Span::styled(
-                app.dashboard.running.to_string(),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw("  Success: "),
-            Span::styled(
-                app.dashboard.success.to_string(),
-                Style::default().fg(Color::Green),
-            ),
-            Span::raw("  Failed: "),
-            Span::styled(
-                app.dashboard.failed.to_string(),
-                Style::default().fg(Color::Red),
-            ),
-            Span::raw("  Visible: "),
-            Span::styled(
-                app.tasks.len().to_string(),
-                Style::default().fg(Color::Blue),
-            ),
-            Span::raw("  Tags: "),
-            Span::styled(
-                app.available_tags.len().to_string(),
-                Style::default().fg(Color::Magenta),
-            ),
-        ]),
-        Line::from(vec![
-            Span::raw("Logs: "),
-            Span::styled(
-                app.analysis.logs.total.to_string(),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::raw("  Error: "),
-            Span::styled(
-                app.analysis.logs.error.to_string(),
-                Style::default().fg(Color::Red),
-            ),
-            Span::raw("  Warn: "),
-            Span::styled(
-                app.analysis.logs.warn.to_string(),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw("  Info: "),
-            Span::styled(
-                app.analysis.logs.info.to_string(),
-                Style::default().fg(Color::Green),
-            ),
-            Span::raw("  Avg Duration: "),
-            Span::styled(
-                format_avg_duration(app.analysis.durations.avg_ms),
-                Style::default().fg(Color::LightBlue),
-            ),
-            Span::raw("  Last Log: "),
-            Span::styled(
-                app.analysis
-                    .logs
-                    .last_ts
-                    .as_deref()
-                    .map(format_rfc3339_millis)
-                    .unwrap_or_else(|| "-".to_string()),
-                Style::default().fg(Color::Gray),
-            ),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
 fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -374,9 +299,7 @@ fn draw_logs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             .collect()
     };
 
-    let max_scroll = lines
-        .len()
-        .saturating_sub(area.height.saturating_sub(2) as usize);
+    let max_scroll = app.log_max_scroll();
     let scroll = if app.follow_logs {
         max_scroll
     } else {
@@ -631,12 +554,6 @@ fn highlight_text(value: impl Into<String>, query: Option<&str>, base: Style) ->
     }
 }
 
-fn format_avg_duration(avg_ms: Option<f64>) -> String {
-    avg_ms
-        .map(|value| format_duration(Some(value.round() as i64)))
-        .unwrap_or_else(|| "-".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,12 +632,5 @@ mod tests {
             selected_tag_from_popup_index(3, &tags),
             Some("fixture-worker".to_string())
         );
-    }
-
-    #[test]
-    fn avg_duration_formats_reasonably() {
-        assert_eq!(format_avg_duration(None), "-");
-        assert_eq!(format_avg_duration(Some(900.0)), "900ms");
-        assert_eq!(format_avg_duration(Some(1500.0)), "1.50s");
     }
 }
