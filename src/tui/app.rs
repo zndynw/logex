@@ -5,14 +5,17 @@ use crate::config::Config;
 use crate::executor::{get_task_info, run_task};
 use crate::exporter::{TaskExportInfo, render_export};
 use crate::formatter::{ListTaskRow, QueryLogRow};
+use crate::utils::format_rfc3339_millis;
 use crate::store::{
     DashboardStats, TaskListFilter, fetch_available_tags, fetch_dashboard_stats, fetch_task_detail,
     fetch_task_list, fetch_task_logs,
 };
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 use super::draw::{
     export_extension, next_export_format, popup_index_for_tag, previous_export_format,
@@ -100,6 +103,8 @@ pub struct App {
     pub detail_scroll: usize,
     pub logs: Vec<QueryLogRow>,
     pub log_scroll: usize,
+    pub log_wrap_width: u16,
+    pub log_viewport_height: u16,
     pub last_log_id: i64,
     pub search_query: Option<String>,
     pub search_buffer: String,
@@ -140,6 +145,8 @@ impl App {
             detail_scroll: 0,
             logs: Vec::new(),
             log_scroll: 0,
+            log_wrap_width: 0,
+            log_viewport_height: 0,
             last_log_id: 0,
             search_query: None,
             search_buffer: String::new(),
@@ -265,7 +272,7 @@ impl App {
                     self.selected_task_index = self.selected_task_index.saturating_sub(1);
                 } else {
                     self.follow_logs = false;
-                    self.log_scroll = self.log_scroll.saturating_sub(1);
+                    self.scroll_logs_up(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -273,9 +280,9 @@ impl App {
                     if self.selected_task_index + 1 < self.tasks.len() {
                         self.selected_task_index += 1;
                     }
-                } else if self.log_scroll + 1 < self.logs.len() {
+                } else {
                     self.follow_logs = false;
-                    self.log_scroll += 1;
+                    self.scroll_logs_down(1);
                 }
             }
             KeyCode::PageUp | KeyCode::Char('u') => {
@@ -284,7 +291,7 @@ impl App {
                         self.selected_task_index.saturating_sub(PAGE_SCROLL_SIZE);
                 } else {
                     self.follow_logs = false;
-                    self.log_scroll = self.log_scroll.saturating_sub(PAGE_SCROLL_SIZE);
+                    self.scroll_logs_up(PAGE_SCROLL_SIZE);
                 }
             }
             KeyCode::PageDown | KeyCode::Char('d') => {
@@ -293,8 +300,7 @@ impl App {
                         .min(self.tasks.len().saturating_sub(1));
                 } else {
                     self.follow_logs = false;
-                    self.log_scroll =
-                        (self.log_scroll + PAGE_SCROLL_SIZE).min(self.logs.len().saturating_sub(1));
+                    self.scroll_logs_down(PAGE_SCROLL_SIZE);
                 }
             }
             KeyCode::Char('/') => {
@@ -466,6 +472,7 @@ impl App {
             self.detail = None;
             self.logs.clear();
             self.last_log_id = 0;
+            self.log_scroll = 0;
             self.analysis = collect_analysis(
                 conn,
                 &AnalysisFilter {
@@ -516,6 +523,8 @@ impl App {
             self.logs.extend(new_logs);
             if self.follow_logs {
                 self.scroll_logs_to_end();
+            } else {
+                self.clamp_log_scroll();
             }
         }
 
@@ -560,7 +569,7 @@ impl App {
     }
 
     pub fn scroll_logs_to_end(&mut self) {
-        self.log_scroll = self.filtered_logs_len().saturating_sub(1);
+        self.log_scroll = self.log_max_scroll();
     }
 
     pub fn filtered_logs_len(&self) -> usize {
@@ -583,6 +592,75 @@ impl App {
             || row.status.to_lowercase().contains(&needle)
             || row.ts.to_lowercase().contains(&needle)
             || tag.contains(&needle)
+    }
+
+    pub fn update_viewport(&mut self, area: Rect) {
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(1),
+            ])
+            .split(area);
+
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(vertical[1]);
+
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(11), Constraint::Min(8)])
+            .split(columns[1]);
+
+        let logs_area = right[1];
+        self.log_wrap_width = logs_area.width.saturating_sub(2);
+        self.log_viewport_height = logs_area.height.saturating_sub(2);
+        self.clamp_log_scroll();
+    }
+
+    pub fn log_max_scroll(&self) -> usize {
+        self.log_rendered_line_count()
+            .saturating_sub(self.log_viewport_height as usize)
+    }
+
+    pub fn clamp_log_scroll(&mut self) {
+        self.log_scroll = self.log_scroll.min(self.log_max_scroll());
+    }
+
+    fn scroll_logs_up(&mut self, lines: usize) {
+        self.log_scroll = self.log_scroll.saturating_sub(lines);
+    }
+
+    fn scroll_logs_down(&mut self, lines: usize) {
+        self.log_scroll = self.log_scroll.saturating_add(lines);
+        self.clamp_log_scroll();
+    }
+
+    fn log_rendered_line_count(&self) -> usize {
+        if self.log_wrap_width == 0 {
+            return 0;
+        }
+
+        let line_count: usize = self
+            .logs
+            .iter()
+            .filter(|row| self.matches_search(row))
+            .map(|row| wrapped_text_line_count(&self.format_log_line(row), self.log_wrap_width))
+            .sum();
+
+        line_count.max(1)
+    }
+
+    fn format_log_line(&self, row: &QueryLogRow) -> String {
+        format!(
+            "{} {:<5} {:<6} {}",
+            format_rfc3339_millis(&row.ts),
+            row.level,
+            row.stream,
+            row.message
+        )
     }
 
     fn export_current_task(&self) -> Result<PathBuf> {
@@ -658,5 +736,170 @@ impl App {
         });
 
         Ok(())
+    }
+}
+
+fn wrapped_text_line_count(text: &str, max_width: u16) -> usize {
+    if max_width == 0 {
+        return 0;
+    }
+    if text.is_empty() {
+        return 1;
+    }
+
+    let max_width = max_width as usize;
+    let mut line_count = 1;
+    let mut line_width = 0usize;
+    let mut token = String::new();
+    let mut token_is_whitespace = None;
+
+    let flush_token = |token: &mut String,
+                       token_is_whitespace: &mut Option<bool>,
+                       line_count: &mut usize,
+                       line_width: &mut usize| {
+        let Some(is_whitespace) = *token_is_whitespace else {
+            return;
+        };
+
+        if token.is_empty() {
+            *token_is_whitespace = None;
+            return;
+        }
+
+        if is_whitespace {
+            for ch in token.chars() {
+                let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if *line_width + width <= max_width {
+                    *line_width += width;
+                } else {
+                    *line_count += 1;
+                    *line_width = width;
+                }
+            }
+        } else {
+            let token_width: usize = token
+                .chars()
+                .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+                .sum();
+
+            if token_width <= max_width {
+                if *line_width > 0 && *line_width + token_width > max_width {
+                    *line_count += 1;
+                    *line_width = 0;
+                }
+                *line_width += token_width;
+            } else {
+                if *line_width > 0 {
+                    *line_count += 1;
+                    *line_width = 0;
+                }
+                for ch in token.chars() {
+                    let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if *line_width + width <= max_width {
+                        *line_width += width;
+                    } else {
+                        *line_count += 1;
+                        *line_width = width;
+                    }
+                }
+            }
+        }
+
+        token.clear();
+        *token_is_whitespace = None;
+    };
+
+    for ch in text.chars() {
+        let is_whitespace = ch.is_whitespace();
+        match token_is_whitespace {
+            Some(current) if current != is_whitespace => {
+                flush_token(
+                    &mut token,
+                    &mut token_is_whitespace,
+                    &mut line_count,
+                    &mut line_width,
+                );
+            }
+            _ => {}
+        }
+        token_is_whitespace = Some(is_whitespace);
+        token.push(ch);
+    }
+
+    flush_token(
+        &mut token,
+        &mut token_is_whitespace,
+        &mut line_count,
+        &mut line_width,
+    );
+
+    line_count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::TuiArgs;
+
+    fn sample_args() -> TuiArgs {
+        TuiArgs {
+            tag: None,
+            refresh_ms: 1000,
+            limit: 100,
+        }
+    }
+
+    fn sample_log(message: &str) -> QueryLogRow {
+        QueryLogRow {
+            id: 1,
+            task_id: 42,
+            tag: Some("fixture-api".into()),
+            ts: "2026-03-21T12:00:00+08:00".into(),
+            stream: "stderr".into(),
+            level: "error".into(),
+            message: message.into(),
+            status: "failed".into(),
+        }
+    }
+
+    #[test]
+    fn scroll_logs_to_end_uses_wrapped_line_count() {
+        let mut app = App::new(
+            PathBuf::from("db.sqlite"),
+            "db".into(),
+            Config::default(),
+            sample_args(),
+        );
+        app.logs = vec![sample_log(
+            "connection timeout while syncing index and retrying against upstream service",
+        )];
+        app.log_wrap_width = 24;
+        app.log_viewport_height = 3;
+
+        app.scroll_logs_to_end();
+
+        assert!(app.log_scroll > 0);
+        assert_eq!(app.log_scroll, app.log_max_scroll());
+    }
+
+    #[test]
+    fn down_key_scrolls_long_wrapped_log_even_when_only_one_row_exists() {
+        let mut app = App::new(
+            PathBuf::from("db.sqlite"),
+            "db".into(),
+            Config::default(),
+            sample_args(),
+        );
+        app.logs = vec![sample_log(
+            "connection timeout while syncing index and retrying against upstream service",
+        )];
+        app.log_wrap_width = 24;
+        app.log_viewport_height = 3;
+        app.focus = FocusPane::Logs;
+        app.follow_logs = false;
+
+        app.handle_key(KeyEvent::from(KeyCode::Down)).unwrap();
+
+        assert_eq!(app.log_scroll, 1);
     }
 }

@@ -9,6 +9,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{self, Stdout};
@@ -35,6 +36,8 @@ pub fn run_tui(
 
     loop {
         app.poll_background(conn)?;
+        let size = terminal.size()?;
+        app.update_viewport(Rect::new(0, 0, size.width, size.height));
         terminal.draw(|frame| draw(frame, &app))?;
 
         let poll_timeout = app.poll_timeout();
