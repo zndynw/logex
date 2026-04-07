@@ -1,6 +1,6 @@
 [package]
 name = "logex"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -17,3 +17,6 @@ shell-words = "1.1"
 ctrlc = "3.4"
 unicode-width = "0.2.0"
 serde_json = "1.0"
+
+[build-dependencies]
+chrono = { version = "0.4.40", default-features = true }

@@ -1,9 +1,20 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+pub const DISPLAY_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (built ",
+    env!("LOGEX_BUILD_DATE"),
+    ")"
+);
+
 #[derive(Debug, Parser)]
 #[command(name = "logex")]
-#[command(version, about = "Run commands and manage task logs", long_about = None)]
+#[command(
+    version = DISPLAY_VERSION,
+    about = "Run commands and manage task logs",
+    long_about = None
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -438,5 +449,12 @@ mod tests {
 
         let err = parsed.expect_err("expected clap conflict");
         assert!(err.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn display_version_includes_package_version_and_build_date() {
+        assert!(DISPLAY_VERSION.contains(env!("CARGO_PKG_VERSION")));
+        assert!(DISPLAY_VERSION.contains("(built "));
+        assert!(DISPLAY_VERSION.ends_with(')'));
     }
 }
