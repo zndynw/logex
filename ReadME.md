@@ -7,6 +7,7 @@
 - `run`：执行命令并实时采集 stdout/stderr 日志写入 SQLite
 - `query`：按任务/标签/时间/等级/状态查询日志，支持 follow、grep、上下文
 - `list`：查看任务摘要列表
+- `tags`：列出已有 tag（去重）
 - `analyze`：统计日志等级占比与任务成功/失败数量
 - `clear`：按条件清理任务及日志，支持安全确认
 
@@ -77,7 +78,7 @@ logex query [options]
 - `-l, --level`：日志等级过滤（`error|info|warn|unknown`）
 - `-s, --status`：任务状态过滤（`success|failed`）
 - `-v, --view`：视图（`detail|summary`，默认 `detail`）
-- `-o, --output`：输出格式（`plain|table|json`，默认 `plain`）
+- `-o, --output`：输出格式（`plain|table|json`，默认 `table`）
 - `-g, --grep`：关键词匹配（匹配 message/level/stream/status/tag）
 - `-A, --after-context`：匹配后上下文行数
 - `-B, --before-context`：匹配前上下文行数
@@ -107,14 +108,15 @@ logex list [options]
 - `-t, --tag`：按标签过滤
 - `-f, --from`：起始时间
 - `-T, --to`：结束时间
+- `-o, --output`：输出格式（`plain|table`，默认 `table`）
 - `-l, --limit`：返回条数（默认 50）
-- `-o, --offset`：分页偏移（默认 0）
+- `-O, --offset`：分页偏移（默认 0）
 
 示例：
 
 ```bash
 logex list
-logex list -t test -l 20 -o 0
+logex list -t test -l 20 -O 0
 ```
 
 ### 5.4 analyze：日志统计
@@ -137,7 +139,30 @@ logex analyze
 logex analyze -t test -f "2026-03-01" -T "2026-03-02"
 ```
 
-### 5.5 clear：清理任务与日志
+### 5.5 tags：列出已有 tag（去重）
+
+```bash
+logex tags [options]
+```
+
+常用参数：
+
+- `-f, --from`：起始时间
+- `-T, --to`：结束时间
+- `-g, --grep`：关键词匹配（匹配 tag）
+- `-o, --output`：输出格式（`plain|table|json`，默认 `table`）
+- `-l, --limit`：返回条数（默认 50）
+- `-O, --offset`：分页偏移（默认 0）
+
+示例：
+
+```bash
+logex tags
+logex tags -g demo
+logex tags -o json
+```
+
+### 5.6 clear：清理任务与日志
 
 ```bash
 logex clear [options]
@@ -186,6 +211,9 @@ logex run -t demo -- bash -c "echo hello && echo oops 1>&2"
 
 # 2) 查看任务列表
 logex list -t demo
+
+# 2.1) 列出已有 tag（去重）
+logex tags -o table
 
 # 3) 查询该标签日志
 logex query -t demo -o table

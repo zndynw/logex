@@ -221,6 +221,11 @@ th{background:#eef3f8;}\
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string()),
         );
+        append_html_meta_row(
+            &mut out,
+            "Env Vars",
+            task.env_vars.as_deref().unwrap_or("-"),
+        );
         out.push_str("</table>");
     }
 
@@ -342,5 +347,27 @@ mod tests {
         assert!(rendered.contains("\"task\":{"));
         assert!(rendered.contains("\"command\":\"cargo test\""));
         assert!(rendered.contains("\"logs\":["));
+    }
+
+    #[test]
+    fn html_export_includes_task_env_vars() {
+        let task = TaskExportInfo {
+            id: 7,
+            tag: Some("demo".into()),
+            command: "cargo test".into(),
+            work_dir: "C:/tmp".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: Some("2026-03-21T12:01:00+08:00".into()),
+            duration_ms: Some(60_000),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("FOO=bar\nTOKEN=<redacted>".into()),
+        };
+
+        let rendered = render_export(ExportFormat::Html, &[sample_row()], Some(&task));
+
+        assert!(rendered.contains("<th>Env Vars</th>"));
+        assert!(rendered.contains("FOO=bar"));
+        assert!(rendered.contains("TOKEN=&lt;redacted&gt;"));
     }
 }
