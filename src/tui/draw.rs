@@ -1,6 +1,6 @@
 use super::app::{App, FocusPane, InputMode};
 use crate::cli::ExportFormat;
-use crate::formatter::QueryLogRow;
+use crate::formatter::{QueryLogRow, task_lineage_label};
 use crate::utils::{format_duration, format_rfc3339_millis};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -59,6 +59,11 @@ fn draw_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Span::styled(
                 app.status_filter.as_str(),
                 Style::default().fg(Color::Green),
+            ),
+            Span::raw(" lineage="),
+            Span::styled(
+                app.lineage_filter.as_str(),
+                Style::default().fg(Color::Magenta),
             ),
             Span::raw("  Tasks: "),
             Span::styled(
@@ -130,7 +135,7 @@ fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(11), Constraint::Min(8)])
+        .constraints([Constraint::Length(15), Constraint::Min(8)])
         .split(columns[1]);
     draw_task_detail(frame, right[0], app);
     draw_logs(frame, right[1], app);
@@ -163,6 +168,11 @@ fn draw_task_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     status,
                     Span::raw(" "),
                     Span::raw(task.tag.as_deref().unwrap_or("-").to_string()),
+                    Span::raw(" "),
+                    Span::styled(
+                        task_lineage_label(task).unwrap_or_else(|| "-".to_string()),
+                        Style::default().fg(Color::Magenta),
+                    ),
                 ]))
             })
             .collect()
@@ -196,43 +206,7 @@ fn draw_task_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     ));
 
     let lines = if let Some(detail) = &app.detail {
-        vec![
-            Line::from(format!("ID:        {}", detail.id)),
-            Line::from(format!(
-                "Tag:       {}",
-                detail.tag.as_deref().unwrap_or("-")
-            )),
-            Line::from(format!("Status:    {}", detail.status)),
-            Line::from(format!("Command:   {}", detail.command)),
-            Line::from(format!("Work Dir:  {}", detail.work_dir)),
-            Line::from(format!(
-                "Env:       {}",
-                detail.env_vars.as_deref().unwrap_or("-")
-            )),
-            Line::from(format!(
-                "Start:     {}",
-                format_rfc3339_millis(&detail.started_at)
-            )),
-            Line::from(format!(
-                "End:       {}",
-                detail
-                    .ended_at
-                    .as_deref()
-                    .map(format_rfc3339_millis)
-                    .unwrap_or_else(|| "-".to_string())
-            )),
-            Line::from(format!(
-                "Duration:  {}",
-                format_duration(detail.duration_ms)
-            )),
-            Line::from(format!(
-                "Exit Code: {}",
-                detail
-                    .exit_code
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            )),
-        ]
+        task_detail_lines(detail, &app.logs)
     } else {
         vec![Line::from("No task selected")]
     };
@@ -243,6 +217,127 @@ fn draw_task_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn task_detail_lines(
+    detail: &crate::exporter::TaskExportInfo,
+    logs: &[QueryLogRow],
+) -> Vec<Line<'static>> {
+    let summary = summarize_task_logs(logs);
+    let mut lines = vec![
+        Line::from(format!("ID:        {}", detail.id)),
+        Line::from(format!(
+            "Tag:       {}",
+            detail.tag.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!("Status:    {}", detail.status)),
+        Line::from(format!("Shell:     {}", detail.shell.as_deref().unwrap_or("-"))),
+        Line::from(format!(
+            "PID:       {}",
+            detail
+                .pid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )),
+        Line::from(format!(
+            "Parent:    {}",
+            detail
+                .parent_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )),
+        Line::from(format!(
+            "Retry Of:  {}",
+            detail
+                .retry_of_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )),
+        Line::from(format!(
+            "Trigger:   {}",
+            detail.trigger_type.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Logs:      total={} stderr={} warn={} error={}",
+            summary.total, summary.stderr, summary.warn, summary.error
+        )),
+    ];
+
+    if let Some(signal) = summary.latest_signal {
+        lines.push(Line::from(format!("Signal:    {}", signal)));
+    }
+
+    lines.extend([
+        Line::from(format!("Command:   {}", detail.command)),
+        Line::from(format!("Work Dir:  {}", detail.work_dir)),
+        Line::from(format!(
+            "Env:       {}",
+            detail.env_vars.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Start:     {}",
+            format_rfc3339_millis(&detail.started_at)
+        )),
+        Line::from(format!(
+            "End:       {}",
+            detail
+                .ended_at
+                .as_deref()
+                .map(format_rfc3339_millis)
+                .unwrap_or_else(|| "-".to_string())
+        )),
+        Line::from(format!(
+            "Duration:  {}",
+            format_duration(detail.duration_ms)
+        )),
+        Line::from(format!(
+            "Exit Code: {}",
+            detail
+                .exit_code
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )),
+    ]);
+
+    lines
+}
+
+struct TaskLogSummary {
+    total: usize,
+    stderr: usize,
+    warn: usize,
+    error: usize,
+    latest_signal: Option<String>,
+}
+
+fn summarize_task_logs(logs: &[QueryLogRow]) -> TaskLogSummary {
+    let mut summary = TaskLogSummary {
+        total: logs.len(),
+        stderr: 0,
+        warn: 0,
+        error: 0,
+        latest_signal: None,
+    };
+
+    for row in logs {
+        if row.stream == "stderr" {
+            summary.stderr += 1;
+        }
+        if row.level == "warn" {
+            summary.warn += 1;
+        }
+        if row.level == "error" {
+            summary.error += 1;
+        }
+    }
+
+    summary.latest_signal = logs
+        .iter()
+        .rev()
+        .find(|row| matches!(row.level.as_str(), "error" | "warn"))
+        .map(|row| format!("{} {}", row.level, row.message));
+
+    summary
 }
 
 fn draw_logs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -316,7 +411,7 @@ fn draw_logs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let message = format!(
-        "{}  |  j/k Move  Tab Switch Pane  Enter Toggle Pane  / Search  e Export  s Status  t Tag  T ClearTag  f Follow  r Refresh  q Quit",
+        "{}  |  j/k Move  Tab Switch Pane  / Search  e Export  s Status  v Lineage  t Tag  T ClearTag  f Follow  r Refresh  q Quit",
         app.status_message
     );
     frame.render_widget(Clear, area);
@@ -428,6 +523,7 @@ fn draw_help_overlay(frame: &mut ratatui::Frame<'_>) {
         Line::from(""),
         Line::from("Filters:"),
         Line::from("  s            Cycle status filter (all/running/success/failed)"),
+        Line::from("  v            Cycle lineage view (all/triggered/retry)"),
         Line::from("  t            Select tag filter"),
         Line::from("  T            Clear tag filter"),
         Line::from("  /            Search logs"),
@@ -558,6 +654,7 @@ fn highlight_text(value: impl Into<String>, query: Option<&str>, base: Style) ->
 mod tests {
     use super::*;
     use crate::cli::TuiArgs;
+    use crate::exporter::TaskExportInfo;
     use crate::config::Config;
     use std::path::PathBuf;
 
@@ -632,5 +729,140 @@ mod tests {
             selected_tag_from_popup_index(3, &tags),
             Some("fixture-worker".to_string())
         );
+    }
+
+    #[test]
+    fn task_detail_lines_include_shell_and_pid() {
+        let detail = TaskExportInfo {
+            id: 7,
+            tag: Some("demo".into()),
+            command: "cargo test".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: ".".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: Some("2026-03-21T12:01:00+08:00".into()),
+            duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("FOO=bar".into()),
+        };
+        let logs = vec![];
+
+        let rendered: Vec<String> = task_detail_lines(&detail, &logs)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("Shell:     bash")));
+        assert!(rendered.iter().any(|line| line.contains("PID:       1234")));
+        assert!(rendered.iter().any(|line| line.contains("Parent:    3")));
+        assert!(rendered.iter().any(|line| line.contains("Retry Of:  5")));
+        assert!(rendered.iter().any(|line| line.contains("Trigger:   retry")));
+    }
+
+    #[test]
+    fn task_lineage_label_prefers_retry_then_dependency_hint() {
+        let retry_task = crate::formatter::ListTaskRow {
+            id: 9,
+            tag: Some("demo".into()),
+            status: "failed".into(),
+            shell: Some("pwsh".into()),
+            work_dir: ".".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: None,
+            duration_ms: None,
+            pid: Some(4321),
+            parent_task_id: Some(7),
+            retry_of_task_id: Some(7),
+            trigger_type: Some("retry".into()),
+            command: "cargo test".into(),
+            env_vars: None,
+        };
+        let dependency_task = crate::formatter::ListTaskRow {
+            id: 10,
+            tag: Some("demo".into()),
+            status: "success".into(),
+            shell: Some("pwsh".into()),
+            work_dir: ".".into(),
+            started_at: "2026-03-21T12:10:00+08:00".into(),
+            ended_at: None,
+            duration_ms: None,
+            pid: Some(5678),
+            parent_task_id: Some(8),
+            retry_of_task_id: None,
+            trigger_type: Some("dependency".into()),
+            command: "cargo build".into(),
+            env_vars: None,
+        };
+
+        assert_eq!(task_lineage_label(&retry_task).as_deref(), Some("retry#7"));
+        assert_eq!(task_lineage_label(&dependency_task).as_deref(), Some("wait#8"));
+    }
+
+    #[test]
+    fn task_detail_lines_include_log_summary_and_latest_signal() {
+        let detail = TaskExportInfo {
+            id: 7,
+            tag: Some("demo".into()),
+            command: "cargo test".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: ".".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: Some("2026-03-21T12:01:00+08:00".into()),
+            duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("FOO=bar".into()),
+        };
+        let logs = vec![
+            QueryLogRow {
+                id: 1,
+                task_id: 7,
+                tag: Some("demo".into()),
+                ts: "2026-03-21T12:00:01+08:00".into(),
+                stream: "stdout".into(),
+                level: "info".into(),
+                message: "starting build".into(),
+                status: "failed".into(),
+            },
+            QueryLogRow {
+                id: 2,
+                task_id: 7,
+                tag: Some("demo".into()),
+                ts: "2026-03-21T12:00:05+08:00".into(),
+                stream: "stderr".into(),
+                level: "warn".into(),
+                message: "cache miss".into(),
+                status: "failed".into(),
+            },
+            QueryLogRow {
+                id: 3,
+                task_id: 7,
+                tag: Some("demo".into()),
+                ts: "2026-03-21T12:00:09+08:00".into(),
+                stream: "stderr".into(),
+                level: "error".into(),
+                message: "compile failed".into(),
+                status: "failed".into(),
+            },
+        ];
+
+        let rendered: Vec<String> = task_detail_lines(&detail, &logs)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("Logs:      total=3 stderr=2 warn=1 error=1")));
+        assert!(rendered.iter().any(|line| line.contains("Signal:    error compile failed")));
     }
 }

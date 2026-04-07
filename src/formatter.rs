@@ -22,10 +22,15 @@ pub struct ListTaskRow {
     pub id: i64,
     pub tag: Option<String>,
     pub status: String,
+    pub shell: Option<String>,
     pub work_dir: String,
     pub started_at: String,
     pub ended_at: Option<String>,
     pub duration_ms: Option<i64>,
+    pub pid: Option<i64>,
+    pub parent_task_id: Option<i64>,
+    pub retry_of_task_id: Option<i64>,
+    pub trigger_type: Option<String>,
     pub command: String,
     pub env_vars: Option<String>,
 }
@@ -309,6 +314,9 @@ pub fn print_list_rows_table(rows: &[ListTaskRow]) {
             Cell::new("ID").add_attribute(Attribute::Bold),
             Cell::new("Tag").add_attribute(Attribute::Bold),
             Cell::new("Status").add_attribute(Attribute::Bold),
+            Cell::new("Lineage").add_attribute(Attribute::Bold),
+            Cell::new("Shell").add_attribute(Attribute::Bold),
+            Cell::new("PID").add_attribute(Attribute::Bold),
             Cell::new("Duration").add_attribute(Attribute::Bold),
             Cell::new("Started At").add_attribute(Attribute::Bold),
             Cell::new("Ended At").add_attribute(Attribute::Bold),
@@ -329,6 +337,14 @@ pub fn print_list_rows_table(rows: &[ListTaskRow]) {
             Cell::new(row.id).fg(Color::Cyan),
             Cell::new(row.tag.as_deref().unwrap_or("-")),
             status_cell,
+            Cell::new(task_lineage_label(row).unwrap_or_else(|| "-".to_string()))
+                .fg(Color::Magenta),
+            Cell::new(row.shell.as_deref().unwrap_or("-")),
+            Cell::new(
+                row.pid
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
             Cell::new(format_duration(row.duration_ms)),
             Cell::new(format_rfc3339_millis(&row.started_at)),
             Cell::new(
@@ -344,6 +360,21 @@ pub fn print_list_rows_table(rows: &[ListTaskRow]) {
     }
 
     println!("{table}");
+}
+
+pub fn task_lineage_label(row: &ListTaskRow) -> Option<String> {
+    if let Some(retry_of_task_id) = row.retry_of_task_id {
+        return Some(format!("retry#{retry_of_task_id}"));
+    }
+
+    match row.trigger_type.as_deref() {
+        Some("dependency") => row.parent_task_id.map(|parent_task_id| format!("wait#{parent_task_id}")),
+        Some("manual") | None => None,
+        Some(trigger_type) => match row.parent_task_id {
+            Some(parent_task_id) => Some(format!("{trigger_type}#{parent_task_id}")),
+            None => Some(trigger_type.to_string()),
+        },
+    }
 }
 
 pub fn print_tags_rows_table(rows: &[TagRow]) {

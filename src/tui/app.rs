@@ -2,12 +2,12 @@ use crate::Result;
 use crate::analyzer::{AnalysisFilter, AnalysisReport, collect_analysis};
 use crate::cli::ExportFormat;
 use crate::config::Config;
-use crate::executor::{get_task_info, run_task};
+use crate::executor::{get_task_info, run_task_with_origin};
 use crate::exporter::{TaskExportInfo, render_export};
 use crate::formatter::{ListTaskRow, QueryLogRow};
 use crate::utils::format_rfc3339_millis;
 use crate::store::{
-    DashboardStats, TaskListFilter, fetch_available_tags, fetch_dashboard_stats, fetch_task_detail,
+    DashboardStats, LineageFilter, TaskListFilter, fetch_available_tags, fetch_dashboard_stats, fetch_task_detail,
     fetch_task_list, fetch_task_logs,
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -51,6 +51,24 @@ pub enum StatusFilter {
     Failed,
 }
 
+impl LineageFilter {
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Triggered,
+            Self::Triggered => Self::RetryOnly,
+            Self::RetryOnly => Self::All,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Triggered => "triggered",
+            Self::RetryOnly => "retry",
+        }
+    }
+}
+
 impl StatusFilter {
     pub fn next(self) -> Self {
         match self {
@@ -91,6 +109,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub follow_logs: bool,
     pub status_filter: StatusFilter,
+    pub lineage_filter: LineageFilter,
     pub tag_filter: Option<String>,
     pub available_tags: Vec<String>,
     pub tag_popup_index: usize,
@@ -133,6 +152,7 @@ impl App {
             input_mode: InputMode::Normal,
             follow_logs: true,
             status_filter: StatusFilter::All,
+            lineage_filter: LineageFilter::All,
             tag_filter: args.tag,
             available_tags: Vec::new(),
             tag_popup_index: 0,
@@ -237,6 +257,11 @@ impl App {
                 self.status_filter = self.status_filter.next();
                 self.apply_filter_change();
                 self.status_message = format!("Status filter: {}", self.status_filter.as_str());
+            }
+            KeyCode::Char('v') => {
+                self.lineage_filter = self.lineage_filter.next();
+                self.apply_filter_change();
+                self.status_message = format!("Lineage view: {}", self.lineage_filter.as_str());
             }
             KeyCode::Char('t') => {
                 self.input_mode = InputMode::TagSelect;
@@ -462,6 +487,7 @@ impl App {
             &TaskListFilter {
                 tag: self.tag_filter.clone(),
                 status: self.status_filter.as_option().map(str::to_string),
+                lineage_filter: self.lineage_filter,
                 limit: self.task_limit,
                 offset: 0,
             },
@@ -611,7 +637,7 @@ impl App {
 
         let right = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(11), Constraint::Min(8)])
+            .constraints([Constraint::Length(15), Constraint::Min(8)])
             .split(columns[1]);
 
         let logs_area = right[1];
@@ -703,26 +729,28 @@ impl App {
             let result = (|| -> Result<String> {
                 let conn = rusqlite::Connection::open(&db_path)?;
                 conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-                let (command, work_dir, original_tag) = get_task_info(&conn, task_id)?;
-                let command_parts = shell_words::split(&command).map_err(|e| {
-                    crate::LogexError::ClearValidation(format!("failed to parse command: {}", e))
-                })?;
-
-                if command_parts.is_empty() {
-                    return Err(crate::LogexError::ClearValidation("empty command".into()));
-                }
+                let task = get_task_info(&conn, task_id)?;
 
                 let run_args = crate::cli::RunArgs {
-                    tag: original_tag,
-                    cwd: Some(PathBuf::from(work_dir)),
+                    tag: task.tag,
+                    cwd: Some(PathBuf::from(task.work_dir)),
                     live: false,
                     wait_for: None,
-                    command: command_parts,
+                    command: task.command_args,
                     env_files: vec![],
                     env_vars: vec![],
                 };
 
-                let (new_task_id, status) = run_task(&conn, run_args, &config)?;
+                let (new_task_id, status) = run_task_with_origin(
+                    &conn,
+                    run_args,
+                    &config,
+                    crate::executor::TaskOrigin {
+                        parent_task_id: Some(task_id),
+                        retry_of_task_id: Some(task_id),
+                        trigger_type: Some(crate::executor::TriggerType::Retry),
+                    },
+                )?;
                 Ok(format!(
                     "Retried task {} as #{} ({})",
                     task_id, new_task_id, status
@@ -901,5 +929,29 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Down)).unwrap();
 
         assert_eq!(app.log_scroll, 1);
+    }
+
+    #[test]
+    fn lineage_view_key_cycles_lineage_modes() {
+        let mut app = App::new(
+            PathBuf::from("db.sqlite"),
+            "db".into(),
+            Config::default(),
+            sample_args(),
+        );
+
+        assert_eq!(app.lineage_filter.as_str(), "all");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('v'))).unwrap();
+        assert_eq!(app.lineage_filter.as_str(), "triggered");
+        assert!(app.status_message.contains("triggered"));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('v'))).unwrap();
+        assert_eq!(app.lineage_filter.as_str(), "retry");
+        assert!(app.status_message.contains("retry"));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('v'))).unwrap();
+        assert_eq!(app.lineage_filter.as_str(), "all");
+        assert!(app.status_message.contains("all"));
     }
 }

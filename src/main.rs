@@ -32,6 +32,10 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::Run(args) => {
+            let mut origin = TaskOrigin {
+                trigger_type: Some(TriggerType::Manual),
+                ..TaskOrigin::default()
+            };
             if let Some(wait_id) = args.wait_for {
                 eprint!("waiting for task {} to complete...", wait_id);
                 let status = wait_for_task(&conn, wait_id)?;
@@ -41,9 +45,11 @@ fn run(cli: Cli) -> Result<()> {
                     eprintln!("dependency task {} failed with status: {}", wait_id, status);
                     std::process::exit(1);
                 }
+                origin.parent_task_id = Some(wait_id);
+                origin.trigger_type = Some(TriggerType::Dependency);
             }
 
-            let (task_id, status) = run_task(&conn, args, &config)?;
+            let (task_id, status) = run_task_with_origin(&conn, args, &config, origin)?;
             println!("task_id={task_id} status={status}");
         }
         Command::Seed(args) => handle_seed(conn, args)?,

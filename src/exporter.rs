@@ -7,10 +7,16 @@ pub struct TaskExportInfo {
     pub id: i64,
     pub tag: Option<String>,
     pub command: String,
+    pub command_json: Option<String>,
+    pub shell: Option<String>,
     pub work_dir: String,
     pub started_at: String,
     pub ended_at: Option<String>,
     pub duration_ms: Option<i64>,
+    pub pid: Option<i64>,
+    pub parent_task_id: Option<i64>,
+    pub retry_of_task_id: Option<i64>,
+    pub trigger_type: Option<String>,
     pub exit_code: Option<i32>,
     pub status: String,
     pub env_vars: Option<String>,
@@ -42,6 +48,13 @@ fn render_txt(rows: &[QueryLogRow], task: Option<&TaskExportInfo>) -> String {
         ));
         out.push_str(&format!("task_status={}\n", task.status));
         out.push_str(&format!("task_command={}\n", task.command));
+        if let Some(ref command_json) = task.command_json {
+            out.push_str(&format!("task_command_json={}\n", command_json));
+        }
+        out.push_str(&format!(
+            "task_shell={}\n",
+            task.shell.as_deref().unwrap_or("-")
+        ));
         out.push_str(&format!("task_work_dir={}\n", task.work_dir));
         out.push_str(&format!("task_started_at={}\n", task.started_at));
         out.push_str(&format!(
@@ -51,6 +64,28 @@ fn render_txt(rows: &[QueryLogRow], task: Option<&TaskExportInfo>) -> String {
         out.push_str(&format!(
             "task_duration={}\n",
             format_duration(task.duration_ms)
+        ));
+        out.push_str(&format!(
+            "task_pid={}\n",
+            task.pid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str(&format!(
+            "task_parent_task_id={}\n",
+            task.parent_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str(&format!(
+            "task_retry_of_task_id={}\n",
+            task.retry_of_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str(&format!(
+            "task_trigger_type={}\n",
+            task.trigger_type.as_deref().unwrap_or("-")
         ));
         out.push_str(&format!(
             "task_exit_code={}\n",
@@ -96,6 +131,14 @@ fn render_json(rows: &[QueryLogRow], task: Option<&TaskExportInfo>) -> String {
             ));
             out.push_str(&format!("\"command\":\"{}\",", json_escape(&task.command)));
             out.push_str(&format!(
+                "\"command_json\":{},",
+                json_opt_string(task.command_json.as_deref())
+            ));
+            out.push_str(&format!(
+                "\"shell\":{},",
+                json_opt_string(task.shell.as_deref())
+            ));
+            out.push_str(&format!(
                 "\"work_dir\":\"{}\",",
                 json_escape(&task.work_dir)
             ));
@@ -112,6 +155,28 @@ fn render_json(rows: &[QueryLogRow], task: Option<&TaskExportInfo>) -> String {
                 task.duration_ms
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "null".to_string())
+            ));
+            out.push_str(&format!(
+                "\"pid\":{},",
+                task.pid
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string())
+            ));
+            out.push_str(&format!(
+                "\"parent_task_id\":{},",
+                task.parent_task_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string())
+            ));
+            out.push_str(&format!(
+                "\"retry_of_task_id\":{},",
+                task.retry_of_task_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string())
+            ));
+            out.push_str(&format!(
+                "\"trigger_type\":{},",
+                json_opt_string(task.trigger_type.as_deref())
             ));
             out.push_str(&format!(
                 "\"exit_code\":{},",
@@ -170,6 +235,7 @@ fn render_csv(rows: &[QueryLogRow]) -> String {
 }
 
 fn render_html(rows: &[QueryLogRow], task: Option<&TaskExportInfo>) -> String {
+    let report = build_log_report(rows);
     let mut out = String::from(
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>logex export</title>\
 <style>\
@@ -182,6 +248,13 @@ th{background:#eef3f8;}\
 .level-error{color:#b42318;font-weight:600;}\
 .level-warn{color:#b54708;font-weight:600;}\
 .level-info{color:#027a48;font-weight:600;}\
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:0 0 24px;}\
+.card{background:#fff;border:1px solid #d9e2ec;box-shadow:0 8px 24px rgba(0,0,0,.06);padding:14px 16px;}\
+.card-label{font-size:12px;color:#52606d;text-transform:uppercase;letter-spacing:.04em;}\
+.card-value{font-size:26px;font-weight:700;margin-top:4px;}\
+.section-list{background:#fff;border:1px solid #d9e2ec;box-shadow:0 8px 24px rgba(0,0,0,.06);padding:14px 18px;margin:0 0 24px;}\
+.section-list ul{margin:8px 0 0;padding-left:18px;}\
+.section-list li{margin:6px 0;}\
 </style></head><body>",
     );
 
@@ -191,12 +264,35 @@ th{background:#eef3f8;}\
         rows.len()
     ));
 
+    out.push_str("<h2>Log Summary</h2><div class=\"cards\">");
+    append_summary_card(&mut out, "Total Logs", &report.total.to_string());
+    append_summary_card(&mut out, "Errors", &report.error.to_string());
+    append_summary_card(&mut out, "Warnings", &report.warn.to_string());
+    append_summary_card(&mut out, "Stdout", &report.stdout.to_string());
+    append_summary_card(&mut out, "Stderr", &report.stderr.to_string());
+    append_summary_card(
+        &mut out,
+        "Window",
+        &format!(
+            "{} -> {}",
+            report.first_ts.as_deref().unwrap_or("-"),
+            report.last_ts.as_deref().unwrap_or("-")
+        ),
+    );
+    out.push_str("</div>");
+
     if let Some(task) = task {
         out.push_str("<h2>Task</h2><table class=\"meta\">");
         append_html_meta_row(&mut out, "ID", &task.id.to_string());
         append_html_meta_row(&mut out, "Tag", task.tag.as_deref().unwrap_or("-"));
         append_html_meta_row(&mut out, "Status", &task.status);
         append_html_meta_row(&mut out, "Command", &task.command);
+        append_html_meta_row(
+            &mut out,
+            "Command JSON",
+            task.command_json.as_deref().unwrap_or("-"),
+        );
+        append_html_meta_row(&mut out, "Shell", task.shell.as_deref().unwrap_or("-"));
         append_html_meta_row(&mut out, "Work Dir", &task.work_dir);
         append_html_meta_row(
             &mut out,
@@ -215,6 +311,35 @@ th{background:#eef3f8;}\
         append_html_meta_row(&mut out, "Duration", &format_duration(task.duration_ms));
         append_html_meta_row(
             &mut out,
+            "PID",
+            &task
+                .pid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+        append_html_meta_row(
+            &mut out,
+            "Parent Task",
+            &task
+                .parent_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+        append_html_meta_row(
+            &mut out,
+            "Retry Of",
+            &task
+                .retry_of_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+        append_html_meta_row(
+            &mut out,
+            "Trigger Type",
+            task.trigger_type.as_deref().unwrap_or("-"),
+        );
+        append_html_meta_row(
+            &mut out,
             "Exit Code",
             &task
                 .exit_code
@@ -227,6 +352,33 @@ th{background:#eef3f8;}\
             task.env_vars.as_deref().unwrap_or("-"),
         );
         out.push_str("</table>");
+
+        out.push_str("<h2>Lineage</h2><div class=\"section-list\"><ul>");
+        out.push_str(&format!(
+            "<li>Trigger type: <strong>{}</strong></li>",
+            escape_html(task.trigger_type.as_deref().unwrap_or("-"))
+        ));
+        out.push_str(&format!(
+            "<li>Parent task: <strong>{}</strong></li>",
+            task.parent_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str(&format!(
+            "<li>Retry of task: <strong>{}</strong></li>",
+            task.retry_of_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str("</ul></div>");
+    }
+
+    if !report.highlights.is_empty() {
+        out.push_str("<h2>Key Findings</h2><div class=\"section-list\"><ul>");
+        for item in &report.highlights {
+            out.push_str(&format!("<li>{}</li>", escape_html(item)));
+        }
+        out.push_str("</ul></div>");
     }
 
     out.push_str("<h2>Logs</h2><table class=\"logs\"><thead><tr>\
@@ -267,10 +419,81 @@ th{background:#eef3f8;}\
     out
 }
 
+#[derive(Debug, Default)]
+struct LogReport {
+    total: usize,
+    error: usize,
+    warn: usize,
+    stdout: usize,
+    stderr: usize,
+    first_ts: Option<String>,
+    last_ts: Option<String>,
+    highlights: Vec<String>,
+}
+
+fn build_log_report(rows: &[QueryLogRow]) -> LogReport {
+    let mut report = LogReport {
+        total: rows.len(),
+        ..LogReport::default()
+    };
+
+    for row in rows {
+        match row.level.as_str() {
+            "error" => {
+                report.error += 1;
+                if report.highlights.len() < 5 {
+                    report.highlights.push(format!(
+                        "[error] {} {}",
+                        format_rfc3339_millis(&row.ts),
+                        row.message
+                    ));
+                }
+            }
+            "warn" => {
+                report.warn += 1;
+                if report.highlights.len() < 5 {
+                    report.highlights.push(format!(
+                        "[warn] {} {}",
+                        format_rfc3339_millis(&row.ts),
+                        row.message
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        match row.stream.as_str() {
+            "stdout" => report.stdout += 1,
+            "stderr" => report.stderr += 1,
+            _ => {}
+        }
+
+        let ts = format_rfc3339_millis(&row.ts);
+        if report.first_ts.is_none() {
+            report.first_ts = Some(ts.clone());
+        }
+        report.last_ts = Some(ts);
+    }
+
+    if report.highlights.is_empty() && !rows.is_empty() {
+        report.highlights.push("No error/warn entries found in this export.".to_string());
+    }
+
+    report
+}
+
 fn append_html_meta_row(out: &mut String, key: &str, value: &str) {
     out.push_str(&format!(
         "<tr><th>{}</th><td>{}</td></tr>",
         escape_html(key),
+        escape_html(value)
+    ));
+}
+
+fn append_summary_card(out: &mut String, label: &str, value: &str) {
+    out.push_str(&format!(
+        "<div class=\"card\"><div class=\"card-label\">{}</div><div class=\"card-value\">{}</div></div>",
+        escape_html(label),
         escape_html(value)
     ));
 }
@@ -334,10 +557,16 @@ mod tests {
             id: 7,
             tag: Some("demo".into()),
             command: "cargo test".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
             work_dir: "C:/tmp".into(),
             started_at: "2026-03-21T12:00:00+08:00".into(),
             ended_at: Some("2026-03-21T12:01:00+08:00".into()),
             duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
             exit_code: Some(1),
             status: "failed".into(),
             env_vars: None,
@@ -346,6 +575,11 @@ mod tests {
         let rendered = render_export(ExportFormat::Json, &[sample_row()], Some(&task));
         assert!(rendered.contains("\"task\":{"));
         assert!(rendered.contains("\"command\":\"cargo test\""));
+        assert!(rendered.contains("\"shell\":\"bash\""));
+        assert!(rendered.contains("\"pid\":1234"));
+        assert!(rendered.contains("\"parent_task_id\":3"));
+        assert!(rendered.contains("\"retry_of_task_id\":5"));
+        assert!(rendered.contains("\"trigger_type\":\"retry\""));
         assert!(rendered.contains("\"logs\":["));
     }
 
@@ -355,10 +589,16 @@ mod tests {
             id: 7,
             tag: Some("demo".into()),
             command: "cargo test".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
             work_dir: "C:/tmp".into(),
             started_at: "2026-03-21T12:00:00+08:00".into(),
             ended_at: Some("2026-03-21T12:01:00+08:00".into()),
             duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
             exit_code: Some(1),
             status: "failed".into(),
             env_vars: Some("FOO=bar\nTOKEN=<redacted>".into()),
@@ -367,7 +607,68 @@ mod tests {
         let rendered = render_export(ExportFormat::Html, &[sample_row()], Some(&task));
 
         assert!(rendered.contains("<th>Env Vars</th>"));
+        assert!(rendered.contains("<th>Shell</th><td>bash</td>"));
+        assert!(rendered.contains("<th>PID</th><td>1234</td>"));
+        assert!(rendered.contains("<th>Parent Task</th><td>3</td>"));
+        assert!(rendered.contains("<th>Retry Of</th><td>5</td>"));
+        assert!(rendered.contains("<th>Trigger Type</th><td>retry</td>"));
+        assert!(rendered.contains("<h2>Log Summary</h2>"));
+        assert!(rendered.contains("<h2>Lineage</h2>"));
+        assert!(rendered.contains("<h2>Key Findings</h2>"));
         assert!(rendered.contains("FOO=bar"));
         assert!(rendered.contains("TOKEN=&lt;redacted&gt;"));
+    }
+
+    #[test]
+    fn html_export_surfaces_error_and_warn_highlights() {
+        let task = TaskExportInfo {
+            id: 7,
+            tag: Some("demo".into()),
+            command: "cargo test".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: "C:/tmp".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: Some("2026-03-21T12:01:00+08:00".into()),
+            duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: None,
+        };
+
+        let rows = vec![
+            QueryLogRow {
+                id: 1,
+                task_id: 7,
+                tag: Some("demo".into()),
+                ts: "2026-03-21T12:00:00+08:00".into(),
+                stream: "stdout".into(),
+                level: "warn".into(),
+                message: "retrying after transient failure".into(),
+                status: "failed".into(),
+            },
+            QueryLogRow {
+                id: 2,
+                task_id: 7,
+                tag: Some("demo".into()),
+                ts: "2026-03-21T12:00:03+08:00".into(),
+                stream: "stderr".into(),
+                level: "error".into(),
+                message: "database locked during write".into(),
+                status: "failed".into(),
+            },
+        ];
+
+        let rendered = render_export(ExportFormat::Html, &rows, Some(&task));
+
+        assert!(rendered.contains("retrying after transient failure"));
+        assert!(rendered.contains("database locked during write"));
+        assert!(rendered.contains("Total Logs"));
+        assert!(rendered.contains("Warnings"));
+        assert!(rendered.contains("Errors"));
     }
 }
