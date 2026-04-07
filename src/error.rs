@@ -8,6 +8,7 @@ pub enum LogexError {
     InvalidWorkDir(String),
     ClearValidation(String),
     TaskNotFound(i64),
+    TaskExecution(String),
     ConfigError(String),
 }
 
@@ -20,6 +21,7 @@ impl fmt::Display for LogexError {
             Self::InvalidWorkDir(s) => write!(f, "invalid work dir: {}", s),
             Self::ClearValidation(s) => write!(f, "{}", s),
             Self::TaskNotFound(id) => write!(f, "task {} not found", id),
+            Self::TaskExecution(s) => write!(f, "{}", s),
             Self::ConfigError(s) => write!(f, "config error: {}", s),
         }
     }

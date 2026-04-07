@@ -77,6 +77,7 @@ mod tests {
             tag: Some("demo".into()),
             cwd: None,
             live: false,
+            background: false,
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],

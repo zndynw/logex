@@ -735,6 +735,7 @@ impl App {
                     tag: task.tag,
                     cwd: Some(PathBuf::from(task.work_dir)),
                     live: false,
+                    background: false,
                     wait_for: None,
                     command: task.command_args,
                     env_files: vec![],

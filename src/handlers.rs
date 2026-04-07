@@ -52,6 +52,7 @@ pub fn handle_retry(conn: &Connection, args: RetryArgs, config: &Config) -> Resu
         cwd: Some(std::path::PathBuf::from(task.work_dir)),
         command: task.command_args,
         live: args.live,
+        background: false,
         wait_for: None,
         env_files: vec![],
         env_vars: vec![],

@@ -77,16 +77,14 @@ pub fn run_task(conn: &Connection, args: RunArgs, config: &Config) -> Result<(i6
     run_task_with_origin(conn, args, config, TaskOrigin::default())
 }
 
-pub fn run_task_with_origin(
+pub fn submit_task_with_origin(
     conn: &Connection,
-    args: RunArgs,
-    config: &Config,
+    args: &RunArgs,
     origin: TaskOrigin,
-) -> Result<(i64, String)> {
+) -> Result<i64> {
     let work_dir = resolve_work_dir(args.cwd.as_ref())?;
-    let command_args = args.command.clone();
-    let command_text = command_args.join(" ");
-    let command_json = encode_command_json(&command_args)?;
+    let command_text = args.command.join(" ");
+    let command_json = encode_command_json(&args.command)?;
     let started_at = now_rfc3339();
     let shell = if args.env_files.is_empty() && args.env_vars.is_empty() {
         None
@@ -110,7 +108,7 @@ pub fn run_task_with_origin(
     conn.execute(
         "INSERT INTO tasks(tag, command, command_json, shell, work_dir, started_at, parent_task_id, retry_of_task_id, trigger_type, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
-            args.tag,
+            args.tag.clone(),
             command_text,
             command_json,
             shell,
@@ -123,7 +121,22 @@ pub fn run_task_with_origin(
             env_vars_text
         ],
     )?;
-    let task_id = conn.last_insert_rowid();
+
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn execute_submitted_task(
+    conn: &Connection,
+    task_id: i64,
+    args: RunArgs,
+    config: &Config,
+) -> Result<String> {
+    let work_dir = resolve_work_dir(args.cwd.as_ref())?;
+    let started_at: String = conn.query_row(
+        "SELECT started_at FROM tasks WHERE id = ?1",
+        params![task_id],
+        |row| row.get(0),
+    )?;
 
     let mut cmd = if args.env_files.is_empty() && args.env_vars.is_empty() {
         let mut c = ProcessCommand::new(&args.command[0]);
@@ -161,7 +174,8 @@ pub fn run_task_with_origin(
 
     ctrlc::set_handler(move || {
         interrupted_clone.store(true, Ordering::SeqCst);
-    }).ok();
+    })
+    .ok();
 
     let stdout = child.stdout.take().ok_or_else(|| {
         LogexError::Io(std::io::Error::new(
@@ -242,14 +256,6 @@ pub fn run_task_with_origin(
     let _ = handle_out.join();
     let _ = handle_err.join();
 
-    let ended_at = now_rfc3339();
-    let duration_ms = chrono::DateTime::parse_from_rfc3339(&ended_at)
-        .map_err(|e| LogexError::TimeFormat(e.to_string()))?
-        .timestamp_millis()
-        - chrono::DateTime::parse_from_rfc3339(&started_at)
-            .map_err(|e| LogexError::TimeFormat(e.to_string()))?
-            .timestamp_millis();
-    let exit_code = status.code().unwrap_or(-1);
     let final_status = if interrupted.load(Ordering::SeqCst) {
         TaskStatus::Failed
     } else if status.success() {
@@ -257,18 +263,19 @@ pub fn run_task_with_origin(
     } else {
         TaskStatus::Failed
     };
+    finalize_task(conn, task_id, &started_at, status.code().unwrap_or(-1), final_status)?;
 
-    conn.execute(
-        "UPDATE tasks SET ended_at=?1, duration_ms=?2, exit_code=?3, status=?4 WHERE id=?5",
-        params![
-            ended_at,
-            duration_ms,
-            exit_code,
-            final_status.as_str(),
-            task_id
-        ],
-    )?;
+    Ok(final_status.to_string())
+}
 
+pub fn run_task_with_origin(
+    conn: &Connection,
+    args: RunArgs,
+    config: &Config,
+    origin: TaskOrigin,
+) -> Result<(i64, String)> {
+    let task_id = submit_task_with_origin(conn, &args, origin)?;
+    let final_status = execute_submitted_task(conn, task_id, args, config)?;
     Ok((task_id, final_status.to_string()))
 }
 
@@ -344,6 +351,57 @@ fn flush_batch(
     drop(stmt);
     tx.commit()?;
     Ok(())
+}
+
+pub fn fail_submitted_task(conn: &Connection, task_id: i64, message: &str) -> Result<()> {
+    let timestamp = now_rfc3339();
+    conn.execute(
+        "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
+        params![task_id, timestamp, "stderr", LogLevel::Error.as_str(), message],
+    )?;
+
+    let started_at: String = conn.query_row(
+        "SELECT started_at FROM tasks WHERE id = ?1",
+        params![task_id],
+        |row| row.get(0),
+    )?;
+    finalize_task(conn, task_id, &started_at, -1, TaskStatus::Failed)?;
+    Ok(())
+}
+
+fn finalize_task(
+    conn: &Connection,
+    task_id: i64,
+    started_at: &str,
+    exit_code: i32,
+    final_status: TaskStatus,
+) -> Result<()> {
+    let ended_at = now_rfc3339();
+    let duration_ms = compute_duration_ms(started_at, &ended_at)?;
+
+    conn.execute(
+        "UPDATE tasks SET ended_at=?1, duration_ms=?2, exit_code=?3, status=?4 WHERE id=?5",
+        params![
+            ended_at,
+            duration_ms,
+            exit_code,
+            final_status.as_str(),
+            task_id
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn compute_duration_ms(started_at: &str, ended_at: &str) -> Result<i64> {
+    Ok(
+        chrono::DateTime::parse_from_rfc3339(ended_at)
+            .map_err(|e| LogexError::TimeFormat(e.to_string()))?
+            .timestamp_millis()
+            - chrono::DateTime::parse_from_rfc3339(started_at)
+                .map_err(|e| LogexError::TimeFormat(e.to_string()))?
+                .timestamp_millis(),
+    )
 }
 
 fn encode_command_json(argv: &[String]) -> Result<String> {
@@ -484,6 +542,7 @@ mod tests {
             tag: Some("demo".into()),
             cwd: None,
             live: false,
+            background: false,
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
@@ -516,6 +575,54 @@ mod tests {
     }
 
     #[test]
+    fn submit_task_with_origin_creates_running_task_before_execution() {
+        let conn = setup_conn();
+        let args = RunArgs {
+            tag: Some("queue".into()),
+            cwd: None,
+            live: false,
+            background: false,
+            wait_for: None,
+            env_files: vec![],
+            env_vars: vec![],
+            command: vec!["powershell".into(), "-Command".into(), "Write-Output ok".into()],
+        };
+
+        let task_id = submit_task_with_origin(
+            &conn,
+            &args,
+            TaskOrigin {
+                parent_task_id: Some(7),
+                retry_of_task_id: None,
+                trigger_type: Some(TriggerType::Dependency),
+            },
+        )
+        .unwrap();
+
+        let row: (String, Option<i64>, Option<String>, Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT status, pid, ended_at, parent_task_id, trigger_type FROM tasks WHERE id = ?1",
+                params![task_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, "running");
+        assert_eq!(row.1, None);
+        assert_eq!(row.2, None);
+        assert_eq!(row.3, Some(7));
+        assert_eq!(row.4.as_deref(), Some("dependency"));
+    }
+
+    #[test]
     fn retry_flow_surfaces_lineage_in_list_detail_and_export() {
         let conn = setup_conn();
         let config = Config::default();
@@ -523,6 +630,7 @@ mod tests {
             tag: Some("demo".into()),
             cwd: None,
             live: false,
+            background: false,
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
@@ -538,6 +646,7 @@ mod tests {
             tag: retry_source.tag,
             cwd: Some(PathBuf::from(retry_source.work_dir)),
             live: false,
+            background: false,
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],

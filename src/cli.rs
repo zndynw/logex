@@ -13,6 +13,8 @@ pub struct Cli {
 pub enum Command {
     #[command(about = "Run a command and record task logs")]
     Run(RunArgs),
+    #[command(hide = true)]
+    RunWorker(RunWorkerArgs),
     #[command(about = "Generate sample tasks and logs for testing")]
     Seed(SeedArgs),
     #[command(about = "Open the interactive terminal dashboard")]
@@ -42,6 +44,12 @@ pub struct RunArgs {
     #[arg(long, help = "Print logs live to the terminal")]
     pub live: bool,
     #[arg(
+        long,
+        help = "Submit the task and continue execution in a detached worker",
+        conflicts_with = "live"
+    )]
+    pub background: bool,
+    #[arg(
         short = 'w',
         long = "wait",
         help = "Wait for the given task ID to finish before running"
@@ -64,6 +72,24 @@ pub struct RunArgs {
         trailing_var_arg = true,
         help = "Command and arguments to execute"
     )]
+    pub command: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RunWorkerArgs {
+    #[arg(long)]
+    pub task_id: i64,
+    #[arg(short = 'w', long = "wait")]
+    pub wait_for: Option<i64>,
+    #[arg(short = 'C', long)]
+    pub cwd: Option<PathBuf>,
+    #[arg(long)]
+    pub live: bool,
+    #[arg(short = 'e', long = "env-file")]
+    pub env_files: Vec<PathBuf>,
+    #[arg(short = 'E', long = "env")]
+    pub env_vars: Vec<String>,
+    #[arg(required = true, trailing_var_arg = true)]
     pub command: Vec<String>,
 }
 
@@ -392,4 +418,25 @@ pub struct RetryArgs {
     pub tag: Option<String>,
     #[arg(long, help = "Print logs live to the terminal")]
     pub live: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_background_conflicts_with_live() {
+        let parsed = Cli::try_parse_from([
+            "logex",
+            "run",
+            "--background",
+            "--live",
+            "--",
+            "echo",
+            "hello",
+        ]);
+
+        let err = parsed.expect_err("expected clap conflict");
+        assert!(err.to_string().contains("cannot be used with"));
+    }
 }
