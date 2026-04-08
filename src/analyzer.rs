@@ -1,9 +1,9 @@
 use crate::Result;
-use crate::utils::{format_duration, format_rfc3339_millis, json_escape};
 use crate::store::{
     fetch_duration_analysis_summary, fetch_log_analysis_summary, fetch_task_analysis_summary,
     fetch_top_tag_analysis,
 };
+use crate::utils::{format_duration, format_rfc3339_millis, json_escape};
 use rusqlite::Connection;
 
 #[derive(Debug, Clone)]

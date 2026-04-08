@@ -368,7 +368,9 @@ pub fn task_lineage_label(row: &ListTaskRow) -> Option<String> {
     }
 
     match row.trigger_type.as_deref() {
-        Some("dependency") => row.parent_task_id.map(|parent_task_id| format!("wait#{parent_task_id}")),
+        Some("dependency") => row
+            .parent_task_id
+            .map(|parent_task_id| format!("wait#{parent_task_id}")),
         Some("manual") | None => None,
         Some(trigger_type) => match row.parent_task_id {
             Some(parent_task_id) => Some(format!("{trigger_type}#{parent_task_id}")),

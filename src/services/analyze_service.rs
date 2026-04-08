@@ -1,5 +1,7 @@
 use crate::Result;
-use crate::analyzer::{AnalysisFilter, AnalysisReport, collect_analysis, render_analysis_json, render_analysis_plain};
+use crate::analyzer::{
+    AnalysisFilter, AnalysisReport, collect_analysis, render_analysis_json, render_analysis_plain,
+};
 use crate::cli::AnalyzeArgs;
 use crate::filters::AnalysisRequest;
 use rusqlite::Connection;

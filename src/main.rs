@@ -76,7 +76,12 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn execute_run_lifecycle(conn: &rusqlite::Connection, config: &logex::config::Config, task_id: i64, mut args: RunArgs) -> Result<String> {
+fn execute_run_lifecycle(
+    conn: &rusqlite::Connection,
+    config: &logex::config::Config,
+    task_id: i64,
+    mut args: RunArgs,
+) -> Result<String> {
     if let Some(wait_id) = args.wait_for {
         eprint!("waiting for task {} to complete...", wait_id);
         let status = wait_for_task(conn, wait_id)?;

@@ -105,13 +105,17 @@ pub fn handle_query(conn: &Connection, args: QueryArgs, config: &Config) -> Resu
             if args.output == QueryOutput::Table {
                 if args.follow {
                     print_detail_rows_follow_table(
-                        table_rows.iter().map(|(row, is_context)| (row, *is_context)),
+                        table_rows
+                            .iter()
+                            .map(|(row, is_context)| (row, *is_context)),
                         &mut follow_table_header_printed,
                         highlighter.as_ref(),
                     );
                 } else {
                     print_detail_rows_table(
-                        table_rows.iter().map(|(row, is_context)| (row, *is_context)),
+                        table_rows
+                            .iter()
+                            .map(|(row, is_context)| (row, *is_context)),
                         highlighter.as_ref(),
                     );
                 }
@@ -154,7 +158,9 @@ fn resolve_initial_last_log_id(
     }
 
     let tail_start_id = fetch_tail_start_id(conn, query, tail.saturating_sub(1) as i64)?;
-    Ok(tail_start_id.map(|start_id| start_id.saturating_sub(1)).unwrap_or(0))
+    Ok(tail_start_id
+        .map(|start_id| start_id.saturating_sub(1))
+        .unwrap_or(0))
 }
 
 fn print_summary_rows(rows: &[QueryLogRow], output: QueryOutput) {
@@ -178,11 +184,7 @@ fn print_summary_rows(rows: &[QueryLogRow], output: QueryOutput) {
     }
 }
 
-fn fetch_tail_start_id(
-    conn: &Connection,
-    query: &LogRowQuery,
-    offset: i64,
-) -> Result<Option<i64>> {
+fn fetch_tail_start_id(conn: &Connection, query: &LogRowQuery, offset: i64) -> Result<Option<i64>> {
     fetch_store_tail_start_id(conn, query, offset)
 }
 
@@ -224,7 +226,9 @@ fn fetch_log_rows_standard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{QueryArgs, QueryMatchMode, QueryOutput, QuerySearchField, QueryView, RunArgs};
+    use crate::cli::{
+        QueryArgs, QueryMatchMode, QueryOutput, QuerySearchField, QueryView, RunArgs,
+    };
     use crate::config::Config;
     use crate::executor::run_task_with_origin;
     use crate::migrations;
@@ -341,7 +345,13 @@ mod tests {
             time_range: Default::default(),
         };
 
-        assert_eq!(resolve_initial_last_log_id(&conn, &query, false, 10).unwrap(), 0);
-        assert_eq!(resolve_initial_last_log_id(&conn, &query, true, 0).unwrap(), 0);
+        assert_eq!(
+            resolve_initial_last_log_id(&conn, &query, false, 10).unwrap(),
+            0
+        );
+        assert_eq!(
+            resolve_initial_last_log_id(&conn, &query, true, 0).unwrap(),
+            0
+        );
     }
 }

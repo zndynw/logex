@@ -134,14 +134,14 @@ mod tests {
         .unwrap();
 
         let filter = TagListFilter::from_tags_args(&TagsArgs {
-                from: None,
-                to: None,
-                grep: None,
-                output: TagsOutput::Table,
-                limit: 50,
-                offset: 0,
-            })
-            .unwrap();
+            from: None,
+            to: None,
+            grep: None,
+            output: TagsOutput::Table,
+            limit: 50,
+            offset: 0,
+        })
+        .unwrap();
 
         let rows = query_tag_rows(&conn, &filter).unwrap();
 
@@ -173,14 +173,14 @@ mod tests {
         .unwrap();
 
         let filter = TagListFilter::from_tags_args(&TagsArgs {
-                from: None,
-                to: None,
-                grep: None,
-                output: TagsOutput::Table,
-                limit: 50,
-                offset: 0,
-            })
-            .unwrap();
+            from: None,
+            to: None,
+            grep: None,
+            output: TagsOutput::Table,
+            limit: 50,
+            offset: 0,
+        })
+        .unwrap();
 
         let rows = query_tag_rows(&conn, &filter).unwrap();
 

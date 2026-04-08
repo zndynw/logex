@@ -88,7 +88,8 @@ mod tests {
             ],
         };
 
-        let (task_id, status) = run_task_with_origin(&conn, args, &Config::default(), Default::default()).unwrap();
+        let (task_id, status) =
+            run_task_with_origin(&conn, args, &Config::default(), Default::default()).unwrap();
         assert_eq!(status, "failed");
 
         let outputs = build_export_outputs(

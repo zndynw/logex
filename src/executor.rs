@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
-use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -263,7 +267,13 @@ pub fn execute_submitted_task(
     } else {
         TaskStatus::Failed
     };
-    finalize_task(conn, task_id, &started_at, status.code().unwrap_or(-1), final_status)?;
+    finalize_task(
+        conn,
+        task_id,
+        &started_at,
+        status.code().unwrap_or(-1),
+        final_status,
+    )?;
 
     Ok(final_status.to_string())
 }
@@ -357,7 +367,13 @@ pub fn fail_submitted_task(conn: &Connection, task_id: i64, message: &str) -> Re
     let timestamp = now_rfc3339();
     conn.execute(
         "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-        params![task_id, timestamp, "stderr", LogLevel::Error.as_str(), message],
+        params![
+            task_id,
+            timestamp,
+            "stderr",
+            LogLevel::Error.as_str(),
+            message
+        ],
     )?;
 
     let started_at: String = conn.query_row(
@@ -394,14 +410,12 @@ fn finalize_task(
 }
 
 fn compute_duration_ms(started_at: &str, ended_at: &str) -> Result<i64> {
-    Ok(
-        chrono::DateTime::parse_from_rfc3339(ended_at)
+    Ok(chrono::DateTime::parse_from_rfc3339(ended_at)
+        .map_err(|e| LogexError::TimeFormat(e.to_string()))?
+        .timestamp_millis()
+        - chrono::DateTime::parse_from_rfc3339(started_at)
             .map_err(|e| LogexError::TimeFormat(e.to_string()))?
-            .timestamp_millis()
-            - chrono::DateTime::parse_from_rfc3339(started_at)
-                .map_err(|e| LogexError::TimeFormat(e.to_string()))?
-                .timestamp_millis(),
-    )
+            .timestamp_millis())
 }
 
 fn encode_command_json(argv: &[String]) -> Result<String> {
@@ -484,7 +498,7 @@ mod tests {
                 level TEXT NOT NULL,
                 message TEXT NOT NULL
             );
-            "#
+            "#,
         )
         .unwrap();
         conn
@@ -546,7 +560,11 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec!["powershell".into(), "-Command".into(), "Write-Output ok".into()],
+            command: vec![
+                "powershell".into(),
+                "-Command".into(),
+                "Write-Output ok".into(),
+            ],
         };
 
         let _ = run_task_with_origin(
@@ -585,7 +603,11 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec!["powershell".into(), "-Command".into(), "Write-Output ok".into()],
+            command: vec![
+                "powershell".into(),
+                "-Command".into(),
+                "Write-Output ok".into(),
+            ],
         };
 
         let task_id = submit_task_with_origin(
@@ -634,7 +656,11 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec!["powershell".into(), "-Command".into(), "Write-Error boom; exit 1".into()],
+            command: vec![
+                "powershell".into(),
+                "-Command".into(),
+                "Write-Error boom; exit 1".into(),
+            ],
         };
 
         let (original_task_id, original_status) =

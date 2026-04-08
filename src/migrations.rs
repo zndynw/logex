@@ -88,7 +88,10 @@ fn ensure_schema_objects(conn: &Connection) -> Result<()> {
     )?;
 
     // Rebuild the FTS index so pre-existing legacy rows are searchable after migration.
-    conn.execute("INSERT INTO task_logs_fts(task_logs_fts) VALUES('rebuild')", [])?;
+    conn.execute(
+        "INSERT INTO task_logs_fts(task_logs_fts) VALUES('rebuild')",
+        [],
+    )?;
 
     Ok(())
 }
@@ -106,7 +109,9 @@ fn upgrade_legacy_tasks_table(conn: &Connection) -> Result<()> {
 
 fn ensure_task_column(conn: &Connection, column: &str, definition: &str) -> Result<()> {
     if !task_column_exists(conn, column)? {
-        conn.execute_batch(&format!("ALTER TABLE tasks ADD COLUMN {column} {definition}"))?;
+        conn.execute_batch(&format!(
+            "ALTER TABLE tasks ADD COLUMN {column} {definition}"
+        ))?;
     }
     Ok(())
 }
@@ -131,8 +136,8 @@ mod tests {
     use crate::exporter::render_export;
     use crate::filters::{LogRowQuery, NormalizedTimeRange};
     use crate::store::{
-        LineageFilter, TaskListFilter, fetch_log_rows, fetch_log_rows_fts, fetch_task_detail,
-        fetch_task_list, fetch_tail_start_id,
+        LineageFilter, TaskListFilter, fetch_log_rows, fetch_log_rows_fts, fetch_tail_start_id,
+        fetch_task_detail, fetch_task_list,
     };
     use rusqlite::params;
 
@@ -160,7 +165,7 @@ mod tests {
                 level TEXT NOT NULL,
                 message TEXT NOT NULL
             );
-            "#
+            "#,
         )
         .unwrap();
 
@@ -231,12 +236,24 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![1, "2026-03-21T12:00:10+08:00", "stdout", "info", "start build"],
+            params![
+                1,
+                "2026-03-21T12:00:10+08:00",
+                "stdout",
+                "info",
+                "start build"
+            ],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![1, "2026-03-21T12:00:20+08:00", "stderr", "error", "deploy timeout"],
+            params![
+                1,
+                "2026-03-21T12:00:20+08:00",
+                "stderr",
+                "error",
+                "deploy timeout"
+            ],
         )
         .unwrap();
 

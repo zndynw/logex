@@ -476,7 +476,9 @@ fn build_log_report(rows: &[QueryLogRow]) -> LogReport {
     }
 
     if report.highlights.is_empty() && !rows.is_empty() {
-        report.highlights.push("No error/warn entries found in this export.".to_string());
+        report
+            .highlights
+            .push("No error/warn entries found in this export.".to_string());
     }
 
     report

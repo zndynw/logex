@@ -214,7 +214,11 @@ pub(crate) fn build_detail_lines(
     }
 }
 
-pub(crate) fn compute_detail_height(area_height: u16, wrap_width: u16, lines: &[Line<'static>]) -> u16 {
+pub(crate) fn compute_detail_height(
+    area_height: u16,
+    wrap_width: u16,
+    lines: &[Line<'static>],
+) -> u16 {
     let detail_line_count = rendered_line_count(lines, wrap_width);
     detail_height_for_area(area_height, detail_line_count)
 }
@@ -306,11 +310,7 @@ fn task_detail_lines(
             .map(format_rfc3339_millis)
             .unwrap_or_else(|| "-".to_string()),
     );
-    push_inline_field(
-        &mut lines,
-        "Duration",
-        format_duration(detail.duration_ms),
-    );
+    push_inline_field(&mut lines, "Duration", format_duration(detail.duration_ms));
 
     push_section_header(&mut lines, "Lineage / Stats");
     push_inline_field(
@@ -378,7 +378,9 @@ fn detail_height_for_area(area_height: u16, line_count: usize) -> u16 {
     const MIN_LOGS_HEIGHT: u16 = 8;
 
     let desired = (line_count as u16).saturating_add(DETAIL_BORDER);
-    let max_detail = area_height.saturating_sub(MIN_LOGS_HEIGHT).max(DETAIL_BORDER);
+    let max_detail = area_height
+        .saturating_sub(MIN_LOGS_HEIGHT)
+        .max(DETAIL_BORDER);
 
     if max_detail <= MIN_DETAIL_HEIGHT {
         return max_detail.max(DETAIL_BORDER);
@@ -388,7 +390,8 @@ fn detail_height_for_area(area_height: u16, line_count: usize) -> u16 {
 }
 
 pub(crate) fn rendered_line_count(lines: &[Line<'static>], max_width: u16) -> usize {
-    lines.iter()
+    lines
+        .iter()
         .map(|line| wrapped_text_line_count(&line.to_string(), max_width))
         .sum::<usize>()
         .max(1)
@@ -845,8 +848,8 @@ fn highlight_text(value: impl Into<String>, query: Option<&str>, base: Style) ->
 mod tests {
     use super::*;
     use crate::cli::TuiArgs;
-    use crate::exporter::TaskExportInfo;
     use crate::config::Config;
+    use crate::exporter::TaskExportInfo;
     use std::path::PathBuf;
 
     fn sample_args() -> TuiArgs {
@@ -992,7 +995,10 @@ mod tests {
         };
 
         assert_eq!(task_lineage_label(&retry_task).as_deref(), Some("retry#7"));
-        assert_eq!(task_lineage_label(&dependency_task).as_deref(), Some("wait#8"));
+        assert_eq!(
+            task_lineage_label(&dependency_task).as_deref(),
+            Some("wait#8")
+        );
     }
 
     #[test]

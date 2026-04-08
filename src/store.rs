@@ -59,7 +59,10 @@ pub fn fetch_available_tags(conn: &Connection, limit: i64) -> Result<Vec<String>
     Ok(out)
 }
 
-pub fn fetch_tag_rows(conn: &Connection, filter: &crate::filters::TagListFilter) -> Result<Vec<TagRow>> {
+pub fn fetch_tag_rows(
+    conn: &Connection,
+    filter: &crate::filters::TagListFilter,
+) -> Result<Vec<TagRow>> {
     let mut sql = String::from(
         r#"
         WITH filtered AS (
@@ -116,7 +119,9 @@ pub fn fetch_tag_rows(conn: &Connection, filter: &crate::filters::TagListFilter)
     let mut tag_rows = Vec::new();
     for row in rows {
         let row = row?;
-        if let Some(ref grep) = filter.grep && !row.tag.contains(grep) {
+        if let Some(ref grep) = filter.grep
+            && !row.tag.contains(grep)
+        {
             continue;
         }
         tag_rows.push(row);
@@ -401,7 +406,12 @@ pub fn fetch_top_tag_analysis(
     )?;
 
     let rows = stmt.query_map(
-        params![tag, time_range.from.as_deref(), time_range.to.as_deref(), limit as i64],
+        params![
+            tag,
+            time_range.from.as_deref(),
+            time_range.to.as_deref(),
+            limit as i64
+        ],
         |row| {
             Ok(TagAnalysis {
                 tag: row.get(0)?,
@@ -518,26 +528,29 @@ pub fn fetch_log_rows(
            ORDER BY l.ts ASC, l.id ASC"#,
     )?;
 
-    let rows = stmt.query_map(params![
-        query.task_id,
-        query.tag.as_deref(),
-        query.time_range.from.as_deref(),
-        query.time_range.to.as_deref(),
-        query.level.as_deref(),
-        query.status.as_deref(),
-        after_log_id
-    ], |row| {
-        Ok(QueryLogRow {
-            id: row.get(0)?,
-            task_id: row.get(1)?,
-            tag: row.get(2)?,
-            ts: row.get(3)?,
-            stream: row.get(4)?,
-            level: row.get(5)?,
-            message: row.get(6)?,
-            status: row.get(7)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![
+            query.task_id,
+            query.tag.as_deref(),
+            query.time_range.from.as_deref(),
+            query.time_range.to.as_deref(),
+            query.level.as_deref(),
+            query.status.as_deref(),
+            after_log_id
+        ],
+        |row| {
+            Ok(QueryLogRow {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                tag: row.get(2)?,
+                ts: row.get(3)?,
+                stream: row.get(4)?,
+                level: row.get(5)?,
+                message: row.get(6)?,
+                status: row.get(7)?,
+            })
+        },
+    )?;
 
     let mut out = Vec::new();
     for row in rows {
@@ -754,7 +767,10 @@ mod tests {
         let record = fetch_task_run_record(&conn, 1).unwrap().unwrap();
 
         assert_eq!(record.command, "cargo test --lib");
-        assert_eq!(record.command_json.as_deref(), Some("[\"cargo\",\"test\",\"--lib\"]"));
+        assert_eq!(
+            record.command_json.as_deref(),
+            Some("[\"cargo\",\"test\",\"--lib\"]")
+        );
         assert_eq!(record.shell.as_deref(), Some("pwsh"));
         assert_eq!(record.pid, Some(4321));
         assert_eq!(record.tag.as_deref(), Some("demo"));
@@ -820,12 +836,24 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![1, "2026-03-21T12:00:10+08:00", "stderr", "warn", "retry soon"],
+            params![
+                1,
+                "2026-03-21T12:00:10+08:00",
+                "stderr",
+                "warn",
+                "retry soon"
+            ],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![1, "2026-03-21T12:00:20+08:00", "stderr", "error", "failed hard"],
+            params![
+                1,
+                "2026-03-21T12:00:20+08:00",
+                "stderr",
+                "error",
+                "failed hard"
+            ],
         )
         .unwrap();
 
@@ -845,8 +873,14 @@ mod tests {
         assert_eq!(summary.error, 1);
         assert_eq!(summary.stdout, 1);
         assert_eq!(summary.stderr, 2);
-        assert_eq!(summary.first_ts.as_deref(), Some("2026-03-21T12:00:05+08:00"));
-        assert_eq!(summary.last_ts.as_deref(), Some("2026-03-21T12:00:20+08:00"));
+        assert_eq!(
+            summary.first_ts.as_deref(),
+            Some("2026-03-21T12:00:05+08:00")
+        );
+        assert_eq!(
+            summary.last_ts.as_deref(),
+            Some("2026-03-21T12:00:20+08:00")
+        );
     }
 
     #[test]
@@ -943,12 +977,24 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![1, "2026-03-21T12:00:05+08:00", "stderr", "error", "timeout while deploy"],
+            params![
+                1,
+                "2026-03-21T12:00:05+08:00",
+                "stderr",
+                "error",
+                "timeout while deploy"
+            ],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO task_logs(task_id, ts, stream, level, message) VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![2, "2026-03-21T12:00:06+08:00", "stderr", "error", "timeout while deploy"],
+            params![
+                2,
+                "2026-03-21T12:00:06+08:00",
+                "stderr",
+                "error",
+                "timeout while deploy"
+            ],
         )
         .unwrap();
 

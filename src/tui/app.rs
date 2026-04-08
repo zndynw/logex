@@ -5,11 +5,11 @@ use crate::config::Config;
 use crate::executor::{get_task_info, run_task_with_origin};
 use crate::exporter::{TaskExportInfo, render_export};
 use crate::formatter::{ListTaskRow, QueryLogRow};
-use crate::utils::format_rfc3339_millis;
 use crate::store::{
-    DashboardStats, LineageFilter, TaskListFilter, fetch_available_tags, fetch_dashboard_stats, fetch_task_detail,
-    fetch_task_list, fetch_task_logs,
+    DashboardStats, LineageFilter, TaskListFilter, fetch_available_tags, fetch_dashboard_stats,
+    fetch_task_detail, fetch_task_list, fetch_task_logs,
 };
+use crate::utils::format_rfc3339_millis;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use std::path::PathBuf;
@@ -227,16 +227,32 @@ impl App {
                     FocusPane::Logs => FocusPane::Tasks,
                 };
             }
-            KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('u')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.scroll_detail_up(PAGE_SCROLL_SIZE);
             }
-            KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('d')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.scroll_detail_down(PAGE_SCROLL_SIZE);
             }
-            KeyCode::Char('b') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('b')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.detail_scroll = 0;
             }
-            KeyCode::Char('f') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('f')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 self.scroll_detail_to_end();
             }
             KeyCode::Char('r') => {

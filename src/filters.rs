@@ -1,9 +1,9 @@
+use crate::Result;
 use crate::cli::{
     AnalyzeArgs, ClearArgs, ExportArgs, ListArgs, QueryArgs, QueryMatchMode, QuerySearchField,
     TagsArgs,
 };
 use crate::formatter::QueryLogRow;
-use crate::Result;
 use crate::utils::normalize_time_arg;
 
 #[derive(Debug, Clone, Default)]
@@ -393,8 +393,22 @@ mod tests {
         assert_eq!(filter.tag.as_deref(), Some("demo"));
         assert_eq!(filter.limit, 25);
         assert_eq!(filter.offset, 10);
-        assert!(filter.time_range.from.as_deref().unwrap().contains("2026-03-21"));
-        assert!(filter.time_range.to.as_deref().unwrap().contains("2026-03-22"));
+        assert!(
+            filter
+                .time_range
+                .from
+                .as_deref()
+                .unwrap()
+                .contains("2026-03-21")
+        );
+        assert!(
+            filter
+                .time_range
+                .to
+                .as_deref()
+                .unwrap()
+                .contains("2026-03-22")
+        );
     }
 
     #[test]
@@ -411,8 +425,22 @@ mod tests {
         let filter = ClearTaskFilter::from_clear_args(&args).unwrap();
         assert_eq!(filter.task_id, Some(7));
         assert_eq!(filter.tag.as_deref(), Some("demo"));
-        assert!(filter.time_range.from.as_deref().unwrap().contains("2026-03-21T10:00:00"));
-        assert!(filter.time_range.to.as_deref().unwrap().contains("2026-03-21T11:00:00"));
+        assert!(
+            filter
+                .time_range
+                .from
+                .as_deref()
+                .unwrap()
+                .contains("2026-03-21T10:00:00")
+        );
+        assert!(
+            filter
+                .time_range
+                .to
+                .as_deref()
+                .unwrap()
+                .contains("2026-03-21T11:00:00")
+        );
     }
 
     #[test]
@@ -428,7 +456,21 @@ mod tests {
         let request = AnalysisRequest::from_analyze_args(&args).unwrap();
         assert_eq!(request.tag.as_deref(), Some("ops"));
         assert_eq!(request.top_tags, 3);
-        assert!(request.time_range.from.as_deref().unwrap().contains("2026-03-20"));
-        assert!(request.time_range.to.as_deref().unwrap().contains("2026-03-21"));
+        assert!(
+            request
+                .time_range
+                .from
+                .as_deref()
+                .unwrap()
+                .contains("2026-03-20")
+        );
+        assert!(
+            request
+                .time_range
+                .to
+                .as_deref()
+                .unwrap()
+                .contains("2026-03-21")
+        );
     }
 }
