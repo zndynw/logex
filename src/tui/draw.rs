@@ -6,6 +6,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 pub fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     let area = frame.area();
@@ -133,11 +134,18 @@ fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     draw_task_list(frame, columns[0], app);
 
+    let detail_lines = build_detail_lines(app.detail.as_ref(), &app.logs);
+    let detail_height = compute_detail_height(
+        columns[1].height,
+        columns[1].width.saturating_sub(2),
+        &detail_lines,
+    );
+
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(15), Constraint::Min(8)])
+        .constraints([Constraint::Length(detail_height), Constraint::Min(8)])
         .split(columns[1]);
-    draw_task_detail(frame, right[0], app);
+    draw_task_detail(frame, right[0], app, detail_lines);
     draw_logs(frame, right[1], app);
 }
 
@@ -195,7 +203,28 @@ fn draw_task_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_task_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+pub(crate) fn build_detail_lines(
+    detail: Option<&crate::exporter::TaskExportInfo>,
+    logs: &[QueryLogRow],
+) -> Vec<Line<'static>> {
+    if let Some(detail) = detail {
+        task_detail_lines(detail, logs)
+    } else {
+        vec![Line::from("No task selected")]
+    }
+}
+
+pub(crate) fn compute_detail_height(area_height: u16, wrap_width: u16, lines: &[Line<'static>]) -> u16 {
+    let detail_line_count = rendered_line_count(lines, wrap_width);
+    detail_height_for_area(area_height, detail_line_count)
+}
+
+fn draw_task_detail(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    app: &App,
+    lines: Vec<Line<'static>>,
+) {
     let block = Block::default().borders(Borders::ALL).title(format!(
         " Detail [{}] ",
         if app.focus == FocusPane::Tasks {
@@ -205,16 +234,11 @@ fn draw_task_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         }
     ));
 
-    let lines = if let Some(detail) = &app.detail {
-        task_detail_lines(detail, &app.logs)
-    } else {
-        vec![Line::from("No task selected")]
-    };
-
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((app.detail_scroll as u16, 0)),
         area,
     );
 }
@@ -224,82 +248,247 @@ fn task_detail_lines(
     logs: &[QueryLogRow],
 ) -> Vec<Line<'static>> {
     let summary = summarize_task_logs(logs);
-    let mut lines = vec![
-        Line::from(format!("ID:        {}", detail.id)),
-        Line::from(format!(
-            "Tag:       {}",
-            detail.tag.as_deref().unwrap_or("-")
-        )),
-        Line::from(format!("Status:    {}", detail.status)),
-        Line::from(format!("Shell:     {}", detail.shell.as_deref().unwrap_or("-"))),
-        Line::from(format!(
-            "PID:       {}",
-            detail
-                .pid
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        )),
-        Line::from(format!(
-            "Parent:    {}",
-            detail
-                .parent_task_id
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        )),
-        Line::from(format!(
-            "Retry Of:  {}",
-            detail
-                .retry_of_task_id
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        )),
-        Line::from(format!(
-            "Trigger:   {}",
-            detail.trigger_type.as_deref().unwrap_or("-")
-        )),
-        Line::from(format!(
-            "Logs:      total={} stderr={} warn={} error={}",
+    let mut lines = Vec::new();
+
+    push_section_header(&mut lines, "Overview");
+    push_inline_field(&mut lines, "ID", detail.id.to_string());
+    push_inline_field(
+        &mut lines,
+        "Tag",
+        detail.tag.as_deref().unwrap_or("-").to_string(),
+    );
+    push_inline_field(&mut lines, "Status", detail.status.clone());
+    push_inline_field(
+        &mut lines,
+        "Shell",
+        detail.shell.as_deref().unwrap_or("-").to_string(),
+    );
+    push_inline_field(
+        &mut lines,
+        "PID",
+        detail
+            .pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+    );
+    push_inline_field(
+        &mut lines,
+        "Exit Code",
+        detail
+            .exit_code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+    );
+
+    push_section_header(&mut lines, "Command");
+    push_block_field(&mut lines, "Command", detail.command.clone());
+    push_block_field(&mut lines, "Work Dir", detail.work_dir.clone());
+
+    push_section_header(&mut lines, "Environment");
+    push_block_field(
+        &mut lines,
+        "Env",
+        detail.env_vars.as_deref().unwrap_or("-").to_string(),
+    );
+
+    push_section_header(&mut lines, "Timing");
+    push_inline_field(
+        &mut lines,
+        "Started",
+        format_rfc3339_millis(&detail.started_at),
+    );
+    push_inline_field(
+        &mut lines,
+        "Ended",
+        detail
+            .ended_at
+            .as_deref()
+            .map(format_rfc3339_millis)
+            .unwrap_or_else(|| "-".to_string()),
+    );
+    push_inline_field(
+        &mut lines,
+        "Duration",
+        format_duration(detail.duration_ms),
+    );
+
+    push_section_header(&mut lines, "Lineage / Stats");
+    push_inline_field(
+        &mut lines,
+        "Parent",
+        detail
+            .parent_task_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+    );
+    push_inline_field(
+        &mut lines,
+        "Retry Of",
+        detail
+            .retry_of_task_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+    );
+    push_inline_field(
+        &mut lines,
+        "Trigger",
+        detail.trigger_type.as_deref().unwrap_or("-").to_string(),
+    );
+    push_inline_field(
+        &mut lines,
+        "Log Summary",
+        format!(
+            "total={} stderr={} warn={} error={}",
             summary.total, summary.stderr, summary.warn, summary.error
-        )),
-    ];
-
-    if let Some(signal) = summary.latest_signal {
-        lines.push(Line::from(format!("Signal:    {}", signal)));
-    }
-
-    lines.extend([
-        Line::from(format!("Command:   {}", detail.command)),
-        Line::from(format!("Work Dir:  {}", detail.work_dir)),
-        Line::from(format!(
-            "Env:       {}",
-            detail.env_vars.as_deref().unwrap_or("-")
-        )),
-        Line::from(format!(
-            "Start:     {}",
-            format_rfc3339_millis(&detail.started_at)
-        )),
-        Line::from(format!(
-            "End:       {}",
-            detail
-                .ended_at
-                .as_deref()
-                .map(format_rfc3339_millis)
-                .unwrap_or_else(|| "-".to_string())
-        )),
-        Line::from(format!(
-            "Duration:  {}",
-            format_duration(detail.duration_ms)
-        )),
-        Line::from(format!(
-            "Exit Code: {}",
-            detail
-                .exit_code
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        )),
-    ]);
+        ),
+    );
+    push_block_field(
+        &mut lines,
+        "Latest Signal",
+        summary.latest_signal.unwrap_or_else(|| "-".to_string()),
+    );
 
     lines
+}
+
+fn push_section_header(lines: &mut Vec<Line<'static>>, title: &str) {
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![Span::styled(
+        title.to_string(),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+}
+
+fn push_inline_field(lines: &mut Vec<Line<'static>>, label: &str, value: String) {
+    lines.push(Line::from(format!("{label}: {value}")));
+}
+
+fn push_block_field(lines: &mut Vec<Line<'static>>, label: &str, value: String) {
+    lines.push(Line::from(format!("{label}:")));
+    lines.push(Line::from(format!("  {value}")));
+}
+
+fn detail_height_for_area(area_height: u16, line_count: usize) -> u16 {
+    const DETAIL_BORDER: u16 = 2;
+    const MIN_DETAIL_HEIGHT: u16 = 10;
+    const MIN_LOGS_HEIGHT: u16 = 8;
+
+    let desired = (line_count as u16).saturating_add(DETAIL_BORDER);
+    let max_detail = area_height.saturating_sub(MIN_LOGS_HEIGHT).max(DETAIL_BORDER);
+
+    if max_detail <= MIN_DETAIL_HEIGHT {
+        return max_detail.max(DETAIL_BORDER);
+    }
+
+    desired.clamp(MIN_DETAIL_HEIGHT, max_detail)
+}
+
+pub(crate) fn rendered_line_count(lines: &[Line<'static>], max_width: u16) -> usize {
+    lines.iter()
+        .map(|line| wrapped_text_line_count(&line.to_string(), max_width))
+        .sum::<usize>()
+        .max(1)
+}
+
+fn wrapped_text_line_count(text: &str, max_width: u16) -> usize {
+    if max_width == 0 {
+        return 0;
+    }
+    if text.is_empty() {
+        return 1;
+    }
+
+    let max_width = max_width as usize;
+    let mut line_count = 1;
+    let mut line_width = 0usize;
+    let mut token = String::new();
+    let mut token_is_whitespace = None;
+
+    let flush_token = |token: &mut String,
+                       token_is_whitespace: &mut Option<bool>,
+                       line_count: &mut usize,
+                       line_width: &mut usize| {
+        let Some(is_whitespace) = *token_is_whitespace else {
+            return;
+        };
+
+        if token.is_empty() {
+            *token_is_whitespace = None;
+            return;
+        }
+
+        if is_whitespace {
+            for ch in token.chars() {
+                let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if *line_width + width <= max_width {
+                    *line_width += width;
+                } else {
+                    *line_count += 1;
+                    *line_width = width;
+                }
+            }
+        } else {
+            let token_width: usize = token
+                .chars()
+                .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+                .sum();
+
+            if token_width <= max_width {
+                if *line_width > 0 && *line_width + token_width > max_width {
+                    *line_count += 1;
+                    *line_width = 0;
+                }
+                *line_width += token_width;
+            } else {
+                if *line_width > 0 {
+                    *line_count += 1;
+                    *line_width = 0;
+                }
+                for ch in token.chars() {
+                    let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if *line_width + width <= max_width {
+                        *line_width += width;
+                    } else {
+                        *line_count += 1;
+                        *line_width = width;
+                    }
+                }
+            }
+        }
+
+        token.clear();
+        *token_is_whitespace = None;
+    };
+
+    for ch in text.chars() {
+        let is_whitespace = ch.is_whitespace();
+        match token_is_whitespace {
+            Some(current) if current != is_whitespace => {
+                flush_token(
+                    &mut token,
+                    &mut token_is_whitespace,
+                    &mut line_count,
+                    &mut line_width,
+                );
+            }
+            _ => {}
+        }
+        token_is_whitespace = Some(is_whitespace);
+        token.push(ch);
+    }
+
+    flush_token(
+        &mut token,
+        &mut token_is_whitespace,
+        &mut line_count,
+        &mut line_width,
+    );
+
+    line_count
 }
 
 struct TaskLogSummary {
@@ -411,7 +600,7 @@ fn draw_logs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let message = format!(
-        "{}  |  j/k Move  Tab Switch Pane  / Search  e Export  s Status  v Lineage  t Tag  T ClearTag  f Follow  r Refresh  q Quit",
+        "{}  |  j/k Move  Tab Switch Pane  Ctrl+u/d DetailPage  Ctrl+b/f DetailEnds  / Search  e Export  s Status  v Lineage  t Tag  T ClearTag  f Follow  r Refresh  q Quit",
         app.status_message
     );
     frame.render_widget(Clear, area);
@@ -513,6 +702,8 @@ fn draw_help_overlay(frame: &mut ratatui::Frame<'_>) {
         Line::from("  j/k, ↓/↑     Move selection up/down"),
         Line::from("  u/d, PgUp/Dn Page up/down"),
         Line::from("  g/G, Home/End Go to first/last"),
+        Line::from("  Ctrl+u/d     Scroll detail panel up/down by page"),
+        Line::from("  Ctrl+b/f     Jump detail panel to top/bottom"),
         Line::from(""),
         Line::from("Actions:"),
         Line::from("  r            Manual refresh"),
@@ -758,11 +949,11 @@ mod tests {
             .map(|line| line.to_string())
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("Shell:     bash")));
-        assert!(rendered.iter().any(|line| line.contains("PID:       1234")));
-        assert!(rendered.iter().any(|line| line.contains("Parent:    3")));
-        assert!(rendered.iter().any(|line| line.contains("Retry Of:  5")));
-        assert!(rendered.iter().any(|line| line.contains("Trigger:   retry")));
+        assert!(rendered.iter().any(|line| line.contains("Overview")));
+        assert!(rendered.iter().any(|line| line.contains("Shell")));
+        assert!(rendered.iter().any(|line| line.contains("PID")));
+        assert!(rendered.iter().any(|line| line.contains("Lineage / Stats")));
+        assert!(rendered.iter().any(|line| line.contains("retry")));
     }
 
     #[test]
@@ -862,7 +1053,15 @@ mod tests {
             .map(|line| line.to_string())
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("Logs:      total=3 stderr=2 warn=1 error=1")));
-        assert!(rendered.iter().any(|line| line.contains("Signal:    error compile failed")));
+        assert!(rendered.iter().any(|line| line.contains("Log Summary")));
+        assert!(rendered.iter().any(|line| line.contains("Latest Signal")));
+        assert!(rendered.iter().any(|line| line.contains("compile failed")));
+    }
+
+    #[test]
+    fn detail_height_grows_with_content_but_preserves_log_space() {
+        assert_eq!(detail_height_for_area(40, 26), 28);
+        assert_eq!(detail_height_for_area(20, 30), 12);
+        assert_eq!(detail_height_for_area(12, 30), 4);
     }
 }

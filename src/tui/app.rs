@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
 use super::draw::{
-    export_extension, next_export_format, popup_index_for_tag, previous_export_format,
+    build_detail_lines, compute_detail_height, export_extension, next_export_format,
+    popup_index_for_tag, previous_export_format, rendered_line_count,
     selected_tag_from_popup_index,
 };
 
@@ -120,6 +121,8 @@ pub struct App {
     pub analysis: AnalysisReport,
     pub detail: Option<TaskExportInfo>,
     pub detail_scroll: usize,
+    pub detail_wrap_width: u16,
+    pub detail_viewport_height: u16,
     pub logs: Vec<QueryLogRow>,
     pub log_scroll: usize,
     pub log_wrap_width: u16,
@@ -163,6 +166,8 @@ impl App {
             analysis: AnalysisReport::default(),
             detail: None,
             detail_scroll: 0,
+            detail_wrap_width: 0,
+            detail_viewport_height: 0,
             logs: Vec::new(),
             log_scroll: 0,
             log_wrap_width: 0,
@@ -221,6 +226,18 @@ impl App {
                     FocusPane::Tasks => FocusPane::Logs,
                     FocusPane::Logs => FocusPane::Tasks,
                 };
+            }
+            KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.scroll_detail_up(PAGE_SCROLL_SIZE);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.scroll_detail_down(PAGE_SCROLL_SIZE);
+            }
+            KeyCode::Char('b') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.detail_scroll = 0;
+            }
+            KeyCode::Char('f') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.scroll_detail_to_end();
             }
             KeyCode::Char('r') => {
                 self.request_refresh();
@@ -496,6 +513,7 @@ impl App {
         if self.tasks.is_empty() {
             self.selected_task_index = 0;
             self.detail = None;
+            self.detail_scroll = 0;
             self.logs.clear();
             self.last_log_id = 0;
             self.log_scroll = 0;
@@ -535,6 +553,7 @@ impl App {
 
         let current_task_id = self.selected_task_id();
         if current_task_id != self.detail.as_ref().map(|detail| detail.id) {
+            self.detail_scroll = 0;
             self.logs.clear();
             self.last_log_id = 0;
             self.log_scroll = 0;
@@ -637,13 +656,49 @@ impl App {
 
         let right = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(15), Constraint::Min(8)])
+            .constraints([
+                Constraint::Length(compute_detail_height(
+                    columns[1].height,
+                    columns[1].width.saturating_sub(2),
+                    &build_detail_lines(self.detail.as_ref(), &self.logs),
+                )),
+                Constraint::Min(8),
+            ])
             .split(columns[1]);
 
+        let detail_area = right[0];
+        self.detail_wrap_width = detail_area.width.saturating_sub(2);
+        self.detail_viewport_height = detail_area.height.saturating_sub(2);
         let logs_area = right[1];
         self.log_wrap_width = logs_area.width.saturating_sub(2);
         self.log_viewport_height = logs_area.height.saturating_sub(2);
+        self.clamp_detail_scroll();
         self.clamp_log_scroll();
+    }
+
+    pub fn detail_max_scroll(&self) -> usize {
+        rendered_line_count(
+            &build_detail_lines(self.detail.as_ref(), &self.logs),
+            self.detail_wrap_width,
+        )
+        .saturating_sub(self.detail_viewport_height as usize)
+    }
+
+    pub fn clamp_detail_scroll(&mut self) {
+        self.detail_scroll = self.detail_scroll.min(self.detail_max_scroll());
+    }
+
+    fn scroll_detail_up(&mut self, lines: usize) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(lines);
+    }
+
+    fn scroll_detail_down(&mut self, lines: usize) {
+        self.detail_scroll = self.detail_scroll.saturating_add(lines);
+        self.clamp_detail_scroll();
+    }
+
+    fn scroll_detail_to_end(&mut self) {
+        self.detail_scroll = self.detail_max_scroll();
     }
 
     pub fn log_max_scroll(&self) -> usize {
@@ -869,6 +924,8 @@ fn wrapped_text_line_count(text: &str, max_width: u16) -> usize {
 mod tests {
     use super::*;
     use crate::cli::TuiArgs;
+    use crate::exporter::TaskExportInfo;
+    use crossterm::event::KeyModifiers;
 
     fn sample_args() -> TuiArgs {
         TuiArgs {
@@ -954,5 +1011,79 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Char('v'))).unwrap();
         assert_eq!(app.lineage_filter.as_str(), "all");
         assert!(app.status_message.contains("all"));
+    }
+
+    #[test]
+    fn ctrl_d_scrolls_detail_down_by_page() {
+        let mut app = App::new(
+            PathBuf::from("db.sqlite"),
+            "db".into(),
+            Config::default(),
+            sample_args(),
+        );
+        app.detail = Some(TaskExportInfo {
+            id: 7,
+            tag: Some("demo".into()),
+            command: "cargo test --workspace --all-features --locked".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: "C:/very/long/work/dir/for/testing/detail/scroll".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: Some("2026-03-21T12:01:00+08:00".into()),
+            duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("A=1 B=2 C=3 D=4 E=5 F=6 G=7".into()),
+        });
+        app.logs = vec![sample_log("compile failed")];
+        app.update_viewport(Rect::new(0, 0, 120, 20));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+
+        assert!(app.detail_scroll > 0);
+    }
+
+    #[test]
+    fn ctrl_f_and_ctrl_b_jump_detail_to_bounds() {
+        let mut app = App::new(
+            PathBuf::from("db.sqlite"),
+            "db".into(),
+            Config::default(),
+            sample_args(),
+        );
+        app.detail = Some(TaskExportInfo {
+            id: 7,
+            tag: Some("demo".into()),
+            command: "cargo test --workspace --all-features --locked".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: "C:/very/long/work/dir/for/testing/detail/scroll".into(),
+            started_at: "2026-03-21T12:00:00+08:00".into(),
+            ended_at: Some("2026-03-21T12:01:00+08:00".into()),
+            duration_ms: Some(60_000),
+            pid: Some(1234),
+            parent_task_id: Some(3),
+            retry_of_task_id: Some(5),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("A=1 B=2 C=3 D=4 E=5 F=6 G=7".into()),
+        });
+        app.logs = vec![sample_log("compile failed")];
+        app.update_viewport(Rect::new(0, 0, 120, 20));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .unwrap();
+        let bottom_scroll = app.detail_scroll;
+        assert!(bottom_scroll > 0);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.detail_scroll, 0);
     }
 }
