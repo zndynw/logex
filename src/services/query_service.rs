@@ -15,6 +15,12 @@ use std::collections::VecDeque;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(test)]
+fn test_shell_command(script: &str) -> Vec<String> {
+    let shell = if cfg!(windows) { "powershell" } else { "pwsh" };
+    vec![shell.into(), "-Command".into(), script.into()]
+}
+
 pub fn handle_query(conn: &Connection, args: QueryArgs, config: &Config) -> Result<()> {
     let row_query = LogRowQuery::from_query_args(&args)?;
     let (before_ctx, after_ctx) =
@@ -250,11 +256,9 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec![
-                "powershell".into(),
-                "-Command".into(),
-                "Write-Output boot; Write-Error 'deploy timeout'; Write-Error 'fatal deploy timeout'; exit 1".into(),
-            ],
+            command: test_shell_command(
+                "Write-Output boot; Write-Error 'deploy timeout'; Write-Error 'fatal deploy timeout'; exit 1",
+            ),
         };
 
         let (task_id, status) =
@@ -307,11 +311,7 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec![
-                "powershell".into(),
-                "-Command".into(),
-                "Write-Output one; Write-Output two; Write-Output three".into(),
-            ],
+            command: test_shell_command("Write-Output one; Write-Output two; Write-Output three"),
         };
 
         let (task_id, status) =

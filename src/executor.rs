@@ -190,18 +190,12 @@ pub fn execute_submitted_task(
     .ok();
 
     let stdout = child.stdout.take().ok_or_else(|| {
-        let err = std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "failed to capture stdout",
-        );
+        let err = std::io::Error::new(std::io::ErrorKind::Other, "failed to capture stdout");
         let _ = fail_submitted_task(conn, task_id, &format!("{err}"));
         LogexError::Io(err)
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
-        let err = std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "failed to capture stderr",
-        );
+        let err = std::io::Error::new(std::io::ErrorKind::Other, "failed to capture stderr");
         let _ = fail_submitted_task(conn, task_id, &format!("{err}"));
         LogexError::Io(err)
     })?;
@@ -474,6 +468,12 @@ fn decode_command_source(command_json: Option<&str>, command_text: &str) -> Resu
 }
 
 #[cfg(test)]
+fn test_shell_command(script: &str) -> Vec<String> {
+    let shell = if cfg!(windows) { "powershell" } else { "pwsh" };
+    vec![shell.into(), "-Command".into(), script.into()]
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::ExportFormat;
@@ -572,11 +572,7 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec![
-                "powershell".into(),
-                "-Command".into(),
-                "Write-Output ok".into(),
-            ],
+            command: test_shell_command("Write-Output ok"),
         };
 
         let _ = run_task_with_origin(
@@ -615,11 +611,7 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec![
-                "powershell".into(),
-                "-Command".into(),
-                "Write-Output ok".into(),
-            ],
+            command: test_shell_command("Write-Output ok"),
         };
 
         let task_id = submit_task_with_origin(
@@ -668,11 +660,7 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec![
-                "powershell".into(),
-                "-Command".into(),
-                "Write-Error boom; exit 1".into(),
-            ],
+            command: test_shell_command("Write-Error boom; exit 1"),
         };
 
         let (original_task_id, original_status) =

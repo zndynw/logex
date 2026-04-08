@@ -5,6 +5,12 @@ use crate::filters::{LogRowQuery, LogSearchFilter, matches_query_row};
 use crate::store::{fetch_log_rows, fetch_task_detail};
 use rusqlite::Connection;
 
+#[cfg(test)]
+fn test_shell_command(script: &str) -> Vec<String> {
+    let shell = if cfg!(windows) { "powershell" } else { "pwsh" };
+    vec![shell.into(), "-Command".into(), script.into()]
+}
+
 pub fn handle_export(conn: &Connection, args: ExportArgs) -> Result<()> {
     let outputs = build_export_outputs(conn, &args)?;
     if outputs.is_empty() {
@@ -81,11 +87,7 @@ mod tests {
             wait_for: None,
             env_files: vec![],
             env_vars: vec![],
-            command: vec![
-                "powershell".into(),
-                "-Command".into(),
-                "Write-Output start; Write-Error 'deploy timeout'; exit 1".into(),
-            ],
+            command: test_shell_command("Write-Output start; Write-Error 'deploy timeout'; exit 1"),
         };
 
         let (task_id, status) =
