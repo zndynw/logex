@@ -161,11 +161,19 @@ pub fn execute_submitted_task(
         c
     };
 
-    let mut child = cmd
+    let mut child = match cmd
         .current_dir(&work_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            let message = format!("failed to start task process: {err}");
+            fail_submitted_task(conn, task_id, &message)?;
+            return Err(err.into());
+        }
+    };
     let pid = child.id();
 
     conn.execute(
@@ -182,16 +190,20 @@ pub fn execute_submitted_task(
     .ok();
 
     let stdout = child.stdout.take().ok_or_else(|| {
-        LogexError::Io(std::io::Error::new(
+        let err = std::io::Error::new(
             std::io::ErrorKind::Other,
             "failed to capture stdout",
-        ))
+        );
+        let _ = fail_submitted_task(conn, task_id, &format!("{err}"));
+        LogexError::Io(err)
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
-        LogexError::Io(std::io::Error::new(
+        let err = std::io::Error::new(
             std::io::ErrorKind::Other,
             "failed to capture stderr",
-        ))
+        );
+        let _ = fail_submitted_task(conn, task_id, &format!("{err}"));
+        LogexError::Io(err)
     })?;
 
     let (tx, rx) = mpsc::channel::<(String, String)>();
@@ -721,5 +733,38 @@ mod tests {
         assert!(html.contains("<th>Retry Of</th>"));
         assert!(html.contains("<th>Trigger Type</th><td>retry</td>"));
         assert!(html.contains("<h2>Log Summary</h2>"));
+    }
+
+    #[test]
+    fn execute_submitted_task_records_spawn_failure_log() {
+        let conn = setup_conn();
+        let args = RunArgs {
+            tag: Some("broken".into()),
+            cwd: None,
+            live: false,
+            background: false,
+            wait_for: None,
+            env_files: vec![],
+            env_vars: vec![],
+            command: vec!["__logex_missing_command__".into()],
+        };
+
+        let task_id = submit_task_with_origin(&conn, &args, TaskOrigin::default()).unwrap();
+        let _err = execute_submitted_task(&conn, task_id, args, &Config::default())
+            .expect_err("missing command should fail");
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM tasks WHERE id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+
+        let logs = fetch_task_logs(&conn, task_id, 0).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].level, "error");
+        assert!(logs[0].message.contains("failed to start task process"));
     }
 }

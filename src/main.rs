@@ -6,6 +6,7 @@ use logex::config;
 use logex::db::init_storage;
 use logex::executor::*;
 use logex::handlers::*;
+use logex::store::fetch_task_status;
 use logex::tui::run_tui;
 use std::process::{Command as ProcessCommand, Stdio};
 
@@ -104,8 +105,10 @@ fn execute_run_lifecycle(
     match execute_submitted_task(conn, task_id, args, config) {
         Ok(status) => Ok(status),
         Err(err) => {
-            let message = format!("task execution failed before completion: {err}");
-            let _ = fail_submitted_task(conn, task_id, &message);
+            if matches!(fetch_task_status(conn, task_id), Ok(Some(status)) if status == "running") {
+                let message = format!("task execution failed before completion: {err}");
+                let _ = fail_submitted_task(conn, task_id, &message);
+            }
             Err(err)
         }
     }
