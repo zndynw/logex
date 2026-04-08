@@ -29,6 +29,8 @@ pub struct TaskRunInfo {
     pub tag: Option<String>,
     pub shell: Option<String>,
     pub pid: Option<u32>,
+    pub env_files: Vec<PathBuf>,
+    pub env_vars: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,22 +97,11 @@ pub fn submit_task_with_origin(
     } else {
         Some("bash".to_string())
     };
-
-    let env_vars_text = if args.env_files.is_empty() && args.env_vars.is_empty() {
-        None
-    } else {
-        let mut parts = Vec::new();
-        for f in &args.env_files {
-            parts.push(format!("-e {}", f.display()));
-        }
-        for v in &args.env_vars {
-            parts.push(format!("-E {}", v));
-        }
-        Some(parts.join(" "))
-    };
+    let env_files_json = encode_env_files_json(&args.env_files)?;
+    let env_vars_json = encode_env_vars_json(&args.env_vars)?;
 
     conn.execute(
-        "INSERT INTO tasks(tag, command, command_json, shell, work_dir, started_at, parent_task_id, retry_of_task_id, trigger_type, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO tasks(tag, command, command_json, shell, work_dir, started_at, parent_task_id, retry_of_task_id, trigger_type, status, env_files_json, env_vars_json) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             args.tag.clone(),
             command_text,
@@ -122,7 +113,8 @@ pub fn submit_task_with_origin(
             origin.retry_of_task_id,
             origin.trigger_type.as_ref().map(TriggerType::as_str),
             TaskStatus::Running.as_str(),
-            env_vars_text
+            env_files_json,
+            env_vars_json
         ],
     )?;
 
@@ -322,6 +314,8 @@ pub fn get_task_info(conn: &Connection, task_id: i64) -> Result<TaskRunInfo> {
         tag: row.tag,
         shell: row.shell,
         pid: row.pid,
+        env_files: decode_env_files_json(row.env_files_json.as_deref())?,
+        env_vars: decode_env_vars_json(row.env_vars_json.as_deref())?,
     })
 }
 
@@ -461,6 +455,84 @@ fn encode_command_json(argv: &[String]) -> Result<String> {
     })
 }
 
+pub fn encode_env_files_json(env_files: &[PathBuf]) -> Result<Option<String>> {
+    if env_files.is_empty() {
+        return Ok(None);
+    }
+
+    serde_json::to_string(
+        &env_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
+    )
+    .map(Some)
+    .map_err(|err| {
+        LogexError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to encode env file metadata: {err}"),
+        ))
+    })
+}
+
+pub fn encode_env_vars_json(env_vars: &[String]) -> Result<Option<String>> {
+    if env_vars.is_empty() {
+        return Ok(None);
+    }
+
+    serde_json::to_string(env_vars).map(Some).map_err(|err| {
+        LogexError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to encode env var metadata: {err}"),
+        ))
+    })
+}
+
+pub fn decode_env_files_json(env_files_json: Option<&str>) -> Result<Vec<PathBuf>> {
+    let Some(env_files_json) = env_files_json else {
+        return Ok(Vec::new());
+    };
+
+    let stored: Vec<String> = serde_json::from_str(env_files_json).map_err(|err| {
+        LogexError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to parse env file metadata: {err}"),
+        ))
+    })?;
+
+    Ok(stored.into_iter().map(PathBuf::from).collect())
+}
+
+pub fn decode_env_vars_json(env_vars_json: Option<&str>) -> Result<Vec<String>> {
+    let Some(env_vars_json) = env_vars_json else {
+        return Ok(Vec::new());
+    };
+
+    let stored: Vec<String> = serde_json::from_str(env_vars_json).map_err(|err| {
+        LogexError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to parse env var metadata: {err}"),
+        ))
+    })?;
+
+    Ok(stored)
+}
+
+pub fn render_env_display(env_files: &[PathBuf], env_vars: &[String]) -> Option<String> {
+    if env_files.is_empty() && env_vars.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for env_file in env_files {
+        parts.push(format!("-e {}", env_file.display()));
+    }
+    for env_var in env_vars {
+        parts.push(format!("-E {}", env_var));
+    }
+    Some(parts.join(" "))
+}
+
 fn decode_command_source(command_json: Option<&str>, command_text: &str) -> Result<Vec<String>> {
     if let Some(command_json) = command_json {
         let stored: StoredCommand = serde_json::from_str(command_json).map_err(|err| {
@@ -525,7 +597,8 @@ mod tests {
                 trigger_type TEXT,
                 exit_code INTEGER,
                 status TEXT NOT NULL,
-                env_vars TEXT
+                env_files_json TEXT,
+                env_vars_json TEXT
             );
             CREATE TABLE task_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -671,6 +744,34 @@ mod tests {
         assert_eq!(row.2, None);
         assert_eq!(row.3, Some(7));
         assert_eq!(row.4.as_deref(), Some("dependency"));
+    }
+
+    #[test]
+    fn submit_task_with_origin_persists_structured_env_metadata() {
+        let conn = setup_conn();
+        let args = RunArgs {
+            tag: Some("queue".into()),
+            cwd: None,
+            live: false,
+            background: false,
+            wait_for: None,
+            env_files: vec![PathBuf::from("/tmp/a.env"), PathBuf::from("/tmp/b.env")],
+            env_vars: vec!["FOO=bar".into(), "BAZ=qux".into()],
+            command: test_shell_command("Write-Output ok"),
+        };
+
+        let task_id = submit_task_with_origin(&conn, &args, TaskOrigin::default()).unwrap();
+
+        let row: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT env_files_json, env_vars_json FROM tasks WHERE id = ?1",
+                params![task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(row.0.as_deref(), Some("[\"/tmp/a.env\",\"/tmp/b.env\"]"));
+        assert_eq!(row.1.as_deref(), Some("[\"FOO=bar\",\"BAZ=qux\"]"));
     }
 
     #[test]

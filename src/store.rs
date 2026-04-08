@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::analyzer::{DurationAnalysis, LogAnalysis, TagAnalysis, TaskAnalysis};
+use crate::executor::{decode_env_files_json, decode_env_vars_json, render_env_display};
 use crate::exporter::TaskExportInfo;
 use crate::filters::{LogRowQuery, NormalizedTimeRange};
 use crate::formatter::{ListTaskRow, QueryLogRow, TagRow};
@@ -38,6 +39,8 @@ pub struct TaskRunRecord {
     pub tag: Option<String>,
     pub shell: Option<String>,
     pub pid: Option<u32>,
+    pub env_files_json: Option<String>,
+    pub env_vars_json: Option<String>,
 }
 
 pub fn fetch_available_tags(conn: &Connection, limit: i64) -> Result<Vec<String>> {
@@ -152,7 +155,7 @@ pub fn fetch_task_list_with_range(
     offset: i64,
 ) -> Result<Vec<ListTaskRow>> {
     let mut stmt = conn.prepare(
-        r#"SELECT id, tag, command, shell, work_dir, started_at, ended_at, duration_ms, pid, parent_task_id, retry_of_task_id, trigger_type, status, env_vars
+        r#"SELECT id, tag, command, shell, work_dir, started_at, ended_at, duration_ms, pid, parent_task_id, retry_of_task_id, trigger_type, status, env_files_json, env_vars_json
            FROM tasks
            WHERE (?1 IS NULL OR tag = ?1)
              AND (?2 IS NULL OR status = ?2)
@@ -198,6 +201,15 @@ impl LineageFilter {
 }
 
 fn map_task_list_row(row: &Row<'_>) -> rusqlite::Result<ListTaskRow> {
+    let env_files_json: Option<String> = row.get(13)?;
+    let env_vars_json: Option<String> = row.get(14)?;
+    let env_files = decode_env_files_json(env_files_json.as_deref()).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    let env_vars = decode_env_vars_json(env_vars_json.as_deref()).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+
     Ok(ListTaskRow {
         id: row.get(0)?,
         tag: row.get(1)?,
@@ -212,7 +224,7 @@ fn map_task_list_row(row: &Row<'_>) -> rusqlite::Result<ListTaskRow> {
         retry_of_task_id: row.get(10)?,
         trigger_type: row.get(11)?,
         status: row.get(12)?,
-        env_vars: row.get(13)?,
+        env_vars: render_env_display(&env_files, &env_vars),
     })
 }
 
@@ -435,9 +447,16 @@ pub fn fetch_top_tag_analysis(
 
 pub fn fetch_task_detail(conn: &Connection, task_id: i64) -> Result<Option<TaskExportInfo>> {
     conn.query_row(
-        "SELECT id, tag, command, command_json, shell, work_dir, started_at, ended_at, duration_ms, pid, parent_task_id, retry_of_task_id, trigger_type, exit_code, status, env_vars FROM tasks WHERE id = ?1",
+        "SELECT id, tag, command, command_json, shell, work_dir, started_at, ended_at, duration_ms, pid, parent_task_id, retry_of_task_id, trigger_type, exit_code, status, env_files_json, env_vars_json FROM tasks WHERE id = ?1",
         params![task_id],
         |row| {
+            let env_files_json: Option<String> = row.get(15)?;
+            let env_vars_json: Option<String> = row.get(16)?;
+            let env_files = decode_env_files_json(env_files_json.as_deref())
+                .map_err(|err| rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(err)))?;
+            let env_vars = decode_env_vars_json(env_vars_json.as_deref())
+                .map_err(|err| rusqlite::Error::FromSqlConversionFailure(16, rusqlite::types::Type::Text, Box::new(err)))?;
+            let env_display = render_env_display(&env_files, &env_vars);
             Ok(TaskExportInfo {
                 id: row.get(0)?,
                 tag: row.get(1)?,
@@ -454,7 +473,7 @@ pub fn fetch_task_detail(conn: &Connection, task_id: i64) -> Result<Option<TaskE
                 trigger_type: row.get(12)?,
                 exit_code: row.get(13)?,
                 status: row.get(14)?,
-                env_vars: row.get(15)?,
+                env_vars: env_display,
             })
         },
     )
@@ -464,7 +483,7 @@ pub fn fetch_task_detail(conn: &Connection, task_id: i64) -> Result<Option<TaskE
 
 pub fn fetch_task_run_record(conn: &Connection, task_id: i64) -> Result<Option<TaskRunRecord>> {
     conn.query_row(
-        "SELECT command, command_json, work_dir, tag, shell, pid FROM tasks WHERE id = ?1",
+        "SELECT command, command_json, work_dir, tag, shell, pid, env_files_json, env_vars_json FROM tasks WHERE id = ?1",
         params![task_id],
         |row| {
             Ok(TaskRunRecord {
@@ -474,6 +493,8 @@ pub fn fetch_task_run_record(conn: &Connection, task_id: i64) -> Result<Option<T
                 tag: row.get(3)?,
                 shell: row.get(4)?,
                 pid: row.get(5)?,
+                env_files_json: row.get(6)?,
+                env_vars_json: row.get(7)?,
             })
         },
     )
@@ -670,7 +691,8 @@ mod tests {
                 trigger_type TEXT,
                 exit_code INTEGER,
                 status TEXT NOT NULL,
-                env_vars TEXT
+                env_files_json TEXT,
+                env_vars_json TEXT
             );
             CREATE TABLE task_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

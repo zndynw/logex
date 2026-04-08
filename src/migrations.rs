@@ -1,7 +1,8 @@
 use crate::Result;
 use rusqlite::Connection;
+use rusqlite::params;
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -46,7 +47,8 @@ fn ensure_schema_objects(conn: &Connection) -> Result<()> {
             trigger_type TEXT,
             exit_code INTEGER,
             status TEXT NOT NULL,
-            env_vars TEXT
+            env_files_json TEXT,
+            env_vars_json TEXT
         );
 
         CREATE TABLE IF NOT EXISTS task_logs (
@@ -104,7 +106,90 @@ fn upgrade_legacy_tasks_table(conn: &Connection) -> Result<()> {
     ensure_task_column(conn, "parent_task_id", "INTEGER")?;
     ensure_task_column(conn, "retry_of_task_id", "INTEGER")?;
     ensure_task_column(conn, "trigger_type", "TEXT")?;
+    ensure_task_column(conn, "env_files_json", "TEXT")?;
+    ensure_task_column(conn, "env_vars_json", "TEXT")?;
+    migrate_legacy_env_metadata(conn)?;
     Ok(())
+}
+
+fn migrate_legacy_env_metadata(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, env_vars FROM tasks WHERE env_vars IS NOT NULL AND (env_files_json IS NULL OR env_vars_json IS NULL)",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut updates = Vec::new();
+
+    for row in rows {
+        let (task_id, env_text) = row?;
+        let Some((env_files_json, env_vars_json)) = parse_legacy_env_text(&env_text)? else {
+            continue;
+        };
+        updates.push((task_id, env_files_json, env_vars_json));
+    }
+    drop(stmt);
+
+    for (task_id, env_files_json, env_vars_json) in updates {
+        conn.execute(
+            "UPDATE tasks SET env_files_json = ?1, env_vars_json = ?2 WHERE id = ?3",
+            params![env_files_json, env_vars_json, task_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn parse_legacy_env_text(env_text: &str) -> Result<Option<(Option<String>, Option<String>)>> {
+    let tokens = match shell_words::split(env_text) {
+        Ok(tokens) => tokens,
+        Err(_) => return Ok(None),
+    };
+
+    if tokens.is_empty() {
+        return Ok(Some((None, None)));
+    }
+
+    let mut env_files = Vec::new();
+    let mut env_vars = Vec::new();
+    let mut idx = 0;
+
+    while idx < tokens.len() {
+        let flag = &tokens[idx];
+        let Some(value) = tokens.get(idx + 1) else {
+            return Ok(None);
+        };
+
+        match flag.as_str() {
+            "-e" => env_files.push(value.clone()),
+            "-E" => env_vars.push(value.clone()),
+            _ => return Ok(None),
+        }
+        idx += 2;
+    }
+
+    let env_files_json = if env_files.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&env_files).map_err(|err| {
+            crate::error::LogexError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("failed to encode migrated env files: {err}"),
+            ))
+        })?)
+    };
+    let env_vars_json = if env_vars.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&env_vars).map_err(|err| {
+            crate::error::LogexError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("failed to encode migrated env vars: {err}"),
+            ))
+        })?)
+    };
+
+    Ok(Some((env_files_json, env_vars_json)))
 }
 
 fn ensure_task_column(conn: &Connection, column: &str, definition: &str) -> Result<()> {
@@ -189,8 +274,65 @@ mod tests {
 
         assert!(task_column_exists(&conn, "command").unwrap());
         assert!(task_column_exists(&conn, "command_json").unwrap());
+        assert!(task_column_exists(&conn, "env_files_json").unwrap());
+        assert!(task_column_exists(&conn, "env_vars_json").unwrap());
         assert!(task_column_exists(&conn, "trigger_type").unwrap());
         assert_eq!(schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_legacy_env_text_into_structured_json_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag TEXT,
+                command TEXT NOT NULL,
+                work_dir TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                duration_ms INTEGER,
+                exit_code INTEGER,
+                status TEXT NOT NULL,
+                env_vars TEXT
+            );
+            CREATE TABLE task_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                ts TEXT NOT NULL,
+                stream TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(tag, command, work_dir, started_at, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-env",
+                "cargo test",
+                ".",
+                "2026-04-08T10:00:00+08:00",
+                "success",
+                "-e /tmp/a.env -E FOO=bar -E BAZ=qux"
+            ],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let migrated: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT env_files_json, env_vars_json FROM tasks WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(migrated.0.as_deref(), Some("[\"/tmp/a.env\"]"));
+        assert_eq!(migrated.1.as_deref(), Some("[\"FOO=bar\",\"BAZ=qux\"]"));
     }
 
     #[test]

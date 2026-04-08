@@ -54,8 +54,8 @@ pub fn handle_retry(conn: &Connection, args: RetryArgs, config: &Config) -> Resu
         live: args.live,
         background: false,
         wait_for: None,
-        env_files: vec![],
-        env_vars: vec![],
+        env_files: task.env_files,
+        env_vars: task.env_vars,
     };
 
     let (task_id, status) = run_task_with_origin(
@@ -91,13 +91,20 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tag TEXT,
                 command TEXT NOT NULL,
+                command_json TEXT,
+                shell TEXT,
                 work_dir TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 ended_at TEXT,
                 duration_ms INTEGER,
+                pid INTEGER,
+                parent_task_id INTEGER,
+                retry_of_task_id INTEGER,
+                trigger_type TEXT,
                 exit_code INTEGER,
                 status TEXT NOT NULL,
-                env_vars TEXT
+                env_files_json TEXT,
+                env_vars_json TEXT
             );
             CREATE TABLE task_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,18 +125,18 @@ mod tests {
         let conn = setup_conn();
 
         conn.execute(
-            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params!["jt_jsc", "cargo test", ".", "2026-03-21T10:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "success", Option::<String>::None],
+            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["jt_jsc", "cargo test", ".", "2026-03-21T10:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "success"],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params!["jt_jsc", "cargo build", ".", "2026-03-21T11:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "failed", Option::<String>::None],
+            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["jt_jsc", "cargo build", ".", "2026-03-21T11:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "failed"],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params!["d_risk", "cargo run", ".", "2026-03-21T12:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "running", Option::<String>::None],
+            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["d_risk", "cargo run", ".", "2026-03-21T12:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "running"],
         )
         .unwrap();
 
@@ -162,13 +169,13 @@ mod tests {
         let conn = setup_conn();
 
         conn.execute(
-            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params!["demo", "cargo test", ".", "2026-03-21T11:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "success", Option::<String>::None],
+            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["demo", "cargo test", ".", "2026-03-21T11:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "success"],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params!["demo", "cargo run", ".", "2026-03-21T11:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "failed", Option::<String>::None],
+            "INSERT INTO tasks(tag, command, work_dir, started_at, ended_at, duration_ms, exit_code, status) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["demo", "cargo run", ".", "2026-03-21T11:00:00+08:00", Option::<String>::None, Option::<i64>::None, Option::<i64>::None, "failed"],
         )
         .unwrap();
 
@@ -329,5 +336,51 @@ mod tests {
 
         assert!(matches_query_row(&matching_row, &filter));
         assert!(!matches_query_row(&partial_row, &filter));
+    }
+
+    #[test]
+    fn handle_retry_reuses_structured_env_metadata() {
+        let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks(tag, command, command_json, shell, work_dir, started_at, ended_at, duration_ms, pid, exit_code, status, env_files_json, env_vars_json) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                "demo",
+                "pwsh -Command Write-Output ok",
+                "{\"argv\":[\"pwsh\",\"-Command\",\"Write-Output ok\"]}",
+                "bash",
+                ".",
+                "2026-04-08T10:00:00+08:00",
+                "2026-04-08T10:00:01+08:00",
+                1000,
+                4321,
+                0,
+                "success",
+                "[\"/tmp/a.env\"]",
+                "[\"FOO=bar\"]"
+            ],
+        )
+        .unwrap();
+
+        handle_retry(
+            &conn,
+            RetryArgs {
+                task_id: 1,
+                tag: None,
+                live: false,
+            },
+            &Config::default(),
+        )
+        .unwrap();
+
+        let retried_env: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT env_files_json, env_vars_json FROM tasks WHERE id = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(retried_env.0.as_deref(), Some("[\"/tmp/a.env\"]"));
+        assert_eq!(retried_env.1.as_deref(), Some("[\"FOO=bar\"]"));
     }
 }
