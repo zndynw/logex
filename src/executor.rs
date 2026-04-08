@@ -5,7 +5,7 @@ use crate::store::{fetch_task_run_record, fetch_task_status};
 use crate::utils::*;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::{
@@ -204,18 +204,12 @@ pub fn execute_submitted_task(
 
     let tx_out = tx.clone();
     let handle_out = thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(std::result::Result::ok) {
-            let _ = tx_out.send(("stdout".to_string(), line));
-        }
+        stream_output_lines(stdout, "stdout", tx_out);
     });
 
     let tx_err = tx.clone();
     let handle_err = thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(std::result::Result::ok) {
-            let _ = tx_err.send(("stderr".to_string(), line));
-        }
+        stream_output_lines(stderr, "stderr", tx_err);
     });
 
     drop(tx);
@@ -367,6 +361,37 @@ fn flush_batch(
     drop(stmt);
     tx.commit()?;
     Ok(())
+}
+
+fn stream_output_lines<R: Read>(reader: R, stream: &str, tx: mpsc::Sender<(String, String)>) {
+    let mut reader = BufReader::new(reader);
+    let mut buffer = Vec::new();
+
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                for line in decode_lossy_lines(&buffer) {
+                    let _ = tx.send((stream.to_string(), line));
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn decode_lossy_lines(bytes: &[u8]) -> Vec<String> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+
+    let text = String::from_utf8_lossy(bytes);
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect()
 }
 
 pub fn fail_submitted_task(conn: &Connection, task_id: i64, message: &str) -> Result<()> {
@@ -754,5 +779,11 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].level, "error");
         assert!(logs[0].message.contains("failed to start task process"));
+    }
+
+    #[test]
+    fn decode_lossy_lines_preserves_non_utf8_output() {
+        let lines = decode_lossy_lines(b"bad:\xff\n");
+        assert_eq!(lines, vec!["bad:\u{fffd}".to_string()]);
     }
 }
