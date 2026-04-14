@@ -1,8 +1,8 @@
 use crate::Result;
 use crate::analyzer::{AnalysisFilter, AnalysisReport, collect_analysis};
-use crate::cli::ExportFormat;
+use crate::cli::{ExportFormat, RunArgs};
 use crate::config::Config;
-use crate::executor::{get_task_info, run_task_with_origin};
+use crate::executor::{TaskRunInfo, get_task_info, run_task_with_origin};
 use crate::exporter::{TaskExportInfo, render_export};
 use crate::formatter::{ListTaskRow, QueryLogRow};
 use crate::store::{
@@ -778,6 +778,19 @@ impl App {
         Ok(output)
     }
 
+    fn build_retry_run_args(task: TaskRunInfo) -> RunArgs {
+        RunArgs {
+            tag: task.tag,
+            cwd: Some(PathBuf::from(task.work_dir)),
+            live: false,
+            background: false,
+            wait_for: None,
+            command: task.command_args,
+            env_files: task.env_files,
+            env_vars: task.env_vars,
+        }
+    }
+
     fn start_retry_current_task(&mut self) -> Result<()> {
         if self.retry_in_progress {
             self.status_message = "Retry already running in background".to_string();
@@ -801,17 +814,7 @@ impl App {
                 let conn = rusqlite::Connection::open(&db_path)?;
                 conn.execute_batch("PRAGMA foreign_keys = ON;")?;
                 let task = get_task_info(&conn, task_id)?;
-
-                let run_args = crate::cli::RunArgs {
-                    tag: task.tag,
-                    cwd: Some(PathBuf::from(task.work_dir)),
-                    live: false,
-                    background: false,
-                    wait_for: None,
-                    command: task.command_args,
-                    env_files: vec![],
-                    env_vars: vec![],
-                };
+                let run_args = Self::build_retry_run_args(task);
 
                 let (new_task_id, status) = run_task_with_origin(
                     &conn,
@@ -942,7 +945,6 @@ mod tests {
     use crate::cli::TuiArgs;
     use crate::exporter::TaskExportInfo;
     use crossterm::event::KeyModifiers;
-
     fn sample_args() -> TuiArgs {
         TuiArgs {
             tag: None,
@@ -962,6 +964,29 @@ mod tests {
             message: message.into(),
             status: "failed".into(),
         }
+    }
+
+    #[test]
+    fn build_retry_run_args_preserves_stored_env_metadata() {
+        let run_args = App::build_retry_run_args(TaskRunInfo {
+            command_text: "printenv FOO".into(),
+            command_args: vec!["printenv".into(), "FOO".into()],
+            work_dir: ".".into(),
+            tag: Some("demo".into()),
+            shell: Some("bash".into()),
+            pid: Some(42),
+            env_files: vec![PathBuf::from("a.env"), PathBuf::from("b.env")],
+            env_vars: vec!["FOO=bar".into(), "BAZ=qux".into()],
+        });
+
+        assert_eq!(
+            run_args.env_files,
+            vec![PathBuf::from("a.env"), PathBuf::from("b.env")]
+        );
+        assert_eq!(
+            run_args.env_vars,
+            vec!["FOO=bar".to_string(), "BAZ=qux".to_string()]
+        );
     }
 
     #[test]
