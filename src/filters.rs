@@ -57,7 +57,7 @@ impl Pagination {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LogRowQuery {
     pub task_id: Option<i64>,
     pub tag: Option<String>,
@@ -88,7 +88,7 @@ impl LogRowQuery {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TaskListFilter {
     pub tag: Option<String>,
     pub time_range: NormalizedTimeRange,
@@ -246,14 +246,6 @@ impl LogSearchFilter {
         };
 
         if self.invert_match { !matched } else { matched }
-    }
-
-    pub fn can_use_message_fts(&self) -> bool {
-        !self.case_sensitive
-            && !self.invert_match
-            && self.patterns.len() == 1
-            && self.fields.len() == 1
-            && self.fields[0] == QuerySearchField::Message
     }
 
     pub fn first_pattern(&self) -> Option<&str> {

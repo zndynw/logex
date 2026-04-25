@@ -7,15 +7,27 @@ const CURRENT_SCHEMA_VERSION: i64 = 2;
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
-    let version = schema_version(conn)?;
+    let mut version = schema_version(conn)?;
     if version >= CURRENT_SCHEMA_VERSION {
         ensure_schema_objects(conn)?;
         return Ok(());
     }
 
     ensure_schema_objects(conn)?;
-    upgrade_legacy_tasks_table(conn)?;
-    set_schema_version(conn, CURRENT_SCHEMA_VERSION)?;
+    if version == 0 {
+        migrate_v1_to_v2(conn)?;
+        set_schema_version(conn, CURRENT_SCHEMA_VERSION)?;
+        return Ok(());
+    }
+
+    while version < CURRENT_SCHEMA_VERSION {
+        match version {
+            1 => migrate_v1_to_v2(conn)?,
+            _ => break,
+        }
+        version += 1;
+        set_schema_version(conn, version)?;
+    }
     Ok(())
 }
 
@@ -98,7 +110,7 @@ fn ensure_schema_objects(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn upgrade_legacy_tasks_table(conn: &Connection) -> Result<()> {
+fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
     ensure_task_column(conn, "env_vars", "TEXT")?;
     ensure_task_column(conn, "command_json", "TEXT")?;
     ensure_task_column(conn, "shell", "TEXT")?;
@@ -333,6 +345,71 @@ mod tests {
 
         assert_eq!(migrated.0.as_deref(), Some("[\"/tmp/a.env\"]"));
         assert_eq!(migrated.1.as_deref(), Some("[\"FOO=bar\",\"BAZ=qux\"]"));
+    }
+
+    #[test]
+    fn migrates_explicit_v1_schema_through_ordered_versions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag TEXT,
+                command TEXT NOT NULL,
+                work_dir TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                duration_ms INTEGER,
+                exit_code INTEGER,
+                status TEXT NOT NULL,
+                env_vars TEXT
+            );
+            CREATE TABLE task_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                ts TEXT NOT NULL,
+                stream TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL
+            );
+            PRAGMA user_version = 1;
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(tag, command, work_dir, started_at, status, env_vars) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "v1-env",
+                "cargo test",
+                ".",
+                "2026-04-08T10:00:00+08:00",
+                "success",
+                "-e /tmp/v1.env -E FOO=bar"
+            ],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert!(task_column_exists(&conn, "command_json").unwrap());
+        assert!(task_column_exists(&conn, "shell").unwrap());
+        assert!(task_column_exists(&conn, "pid").unwrap());
+        assert!(task_column_exists(&conn, "parent_task_id").unwrap());
+        assert!(task_column_exists(&conn, "retry_of_task_id").unwrap());
+        assert!(task_column_exists(&conn, "trigger_type").unwrap());
+        assert!(task_column_exists(&conn, "env_files_json").unwrap());
+        assert!(task_column_exists(&conn, "env_vars_json").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+
+        let migrated: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT env_files_json, env_vars_json FROM tasks WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(migrated.0.as_deref(), Some("[\"/tmp/v1.env\"]"));
+        assert_eq!(migrated.1.as_deref(), Some("[\"FOO=bar\"]"));
     }
 
     #[test]

@@ -7,8 +7,7 @@ use crate::formatter::{
     print_detail_rows_follow_table, print_detail_rows_table,
 };
 use crate::store::{
-    fetch_log_rows as fetch_store_log_rows, fetch_log_rows_fts as fetch_store_log_rows_fts,
-    fetch_tail_start_id as fetch_store_tail_start_id,
+    fetch_log_rows as fetch_store_log_rows, fetch_tail_start_id as fetch_store_tail_start_id,
 };
 use rusqlite::Connection;
 use std::collections::VecDeque;
@@ -50,81 +49,99 @@ pub fn handle_query(conn: &Connection, args: QueryArgs, config: &Config) -> Resu
     let mut idle_cycles = 0_u32;
 
     loop {
-        let all_rows = fetch_log_rows(conn, &row_query, &filter, last_log_id)?;
+        if args.view == QueryView::Summary {
+            let batch = fetch_filtered_log_row_batch(conn, &row_query, &filter, last_log_id)?;
+            let saw_new_rows = batch.last_seen_log_id.is_some();
+            if let Some(last_seen_log_id) = batch.last_seen_log_id {
+                last_log_id = last_log_id.max(last_seen_log_id);
+            }
+
+            let matched_rows = batch.rows;
+            if !matched_rows.is_empty() {
+                print_summary_rows(&matched_rows, args.output);
+            }
+
+            if !args.follow {
+                break;
+            }
+
+            if saw_new_rows {
+                idle_cycles = 0;
+                current_poll_ms = base_poll_ms;
+            } else {
+                idle_cycles += 1;
+                current_poll_ms = (base_poll_ms * (1 << idle_cycles.min(4))).min(5000);
+            }
+
+            thread::sleep(Duration::from_millis(current_poll_ms));
+            continue;
+        }
+
+        // Detail mode needs unfiltered rows so before/after context can include
+        // neighboring non-matching log lines.
+        let all_rows = fetch_log_rows_standard(conn, &row_query, last_log_id)?;
         let saw_new_rows = !all_rows.is_empty();
         if let Some(last_row) = all_rows.last() {
             last_log_id = last_log_id.max(last_row.id);
         }
 
-        if args.view == QueryView::Summary {
-            let matched_rows: Vec<_> = all_rows
-                .into_iter()
-                .filter(|row| matches_query_row(row, &filter))
-                .collect();
-            if !matched_rows.is_empty() {
-                print_summary_rows(&matched_rows, args.output);
-            }
-        } else {
-            let mut table_rows = Vec::new();
-            for row in all_rows {
-                if matches_query_row(&row, &filter) {
-                    for buf_row in before_buffer.drain(..) {
-                        match args.output {
-                            QueryOutput::Plain => {
-                                print_detail_row(&buf_row, true, false, highlighter.as_ref())
-                            }
-                            QueryOutput::Table => table_rows.push((buf_row, true)),
-                            QueryOutput::Json => print_detail_row_json(&buf_row, true),
-                        }
-                    }
-
+        let mut table_rows = Vec::new();
+        for row in all_rows {
+            if matches_query_row(&row, &filter) {
+                for buf_row in before_buffer.drain(..) {
                     match args.output {
                         QueryOutput::Plain => {
-                            print_detail_row(&row, false, false, highlighter.as_ref())
+                            print_detail_row(&buf_row, true, false, highlighter.as_ref())
                         }
-                        QueryOutput::Table => table_rows.push((row.clone(), false)),
-                        QueryOutput::Json => print_detail_row_json(&row, false),
+                        QueryOutput::Table => table_rows.push((buf_row, true)),
+                        QueryOutput::Json => print_detail_row_json(&buf_row, true),
                     }
-                    pending_after = after_ctx;
-                    continue;
                 }
 
-                if pending_after > 0 {
-                    match args.output {
-                        QueryOutput::Plain => {
-                            print_detail_row(&row, false, true, highlighter.as_ref())
-                        }
-                        QueryOutput::Table => table_rows.push((row.clone(), true)),
-                        QueryOutput::Json => print_detail_row_json(&row, true),
+                match args.output {
+                    QueryOutput::Plain => {
+                        print_detail_row(&row, false, false, highlighter.as_ref())
                     }
-                    pending_after -= 1;
+                    QueryOutput::Table => table_rows.push((row.clone(), false)),
+                    QueryOutput::Json => print_detail_row_json(&row, false),
                 }
-
-                if before_ctx > 0 {
-                    before_buffer.push_back(row);
-                    while before_buffer.len() > before_ctx {
-                        before_buffer.pop_front();
-                    }
-                }
+                pending_after = after_ctx;
+                continue;
             }
 
-            if args.output == QueryOutput::Table {
-                if args.follow {
-                    print_detail_rows_follow_table(
-                        table_rows
-                            .iter()
-                            .map(|(row, is_context)| (row, *is_context)),
-                        &mut follow_table_header_printed,
-                        highlighter.as_ref(),
-                    );
-                } else {
-                    print_detail_rows_table(
-                        table_rows
-                            .iter()
-                            .map(|(row, is_context)| (row, *is_context)),
-                        highlighter.as_ref(),
-                    );
+            if pending_after > 0 {
+                match args.output {
+                    QueryOutput::Plain => print_detail_row(&row, false, true, highlighter.as_ref()),
+                    QueryOutput::Table => table_rows.push((row.clone(), true)),
+                    QueryOutput::Json => print_detail_row_json(&row, true),
                 }
+                pending_after -= 1;
+            }
+
+            if before_ctx > 0 {
+                before_buffer.push_back(row);
+                while before_buffer.len() > before_ctx {
+                    before_buffer.pop_front();
+                }
+            }
+        }
+
+        if args.output == QueryOutput::Table {
+            if args.follow {
+                print_detail_rows_follow_table(
+                    table_rows
+                        .iter()
+                        .map(|(row, is_context)| (row, *is_context)),
+                    &mut follow_table_header_printed,
+                    highlighter.as_ref(),
+                );
+            } else {
+                print_detail_rows_table(
+                    table_rows
+                        .iter()
+                        .map(|(row, is_context)| (row, *is_context)),
+                    highlighter.as_ref(),
+                );
             }
         }
 
@@ -194,31 +211,37 @@ fn fetch_tail_start_id(conn: &Connection, query: &LogRowQuery, offset: i64) -> R
     fetch_store_tail_start_id(conn, query, offset)
 }
 
-fn fetch_log_rows(
+pub(crate) fn fetch_filtered_log_rows(
     conn: &Connection,
     query: &LogRowQuery,
     filter: &LogSearchFilter,
     last_log_id: i64,
 ) -> Result<Vec<QueryLogRow>> {
-    if filter.can_use_message_fts() {
-        fetch_log_rows_fts(
-            conn,
-            query,
-            last_log_id,
-            filter.first_pattern().unwrap_or_default(),
-        )
-    } else {
-        fetch_log_rows_standard(conn, query, last_log_id)
-    }
+    Ok(fetch_filtered_log_row_batch(conn, query, filter, last_log_id)?.rows)
 }
 
-fn fetch_log_rows_fts(
+struct FilteredLogRowBatch {
+    rows: Vec<QueryLogRow>,
+    last_seen_log_id: Option<i64>,
+}
+
+fn fetch_filtered_log_row_batch(
     conn: &Connection,
     query: &LogRowQuery,
+    filter: &LogSearchFilter,
     last_log_id: i64,
-    pattern: &str,
-) -> Result<Vec<QueryLogRow>> {
-    fetch_store_log_rows_fts(conn, query, last_log_id, pattern)
+) -> Result<FilteredLogRowBatch> {
+    let rows = fetch_log_rows_standard(conn, query, last_log_id)?;
+    let last_seen_log_id = rows.last().map(|row| row.id);
+    let rows = rows
+        .into_iter()
+        .filter(|row| matches_query_row(row, filter))
+        .collect();
+
+    Ok(FilteredLogRowBatch {
+        rows,
+        last_seen_log_id,
+    })
 }
 
 fn fetch_log_rows_standard(
@@ -290,9 +313,7 @@ mod tests {
         let row_query = LogRowQuery::from_query_args(&query_args).unwrap();
         let filter = LogSearchFilter::from_query_args(&query_args);
 
-        assert!(filter.can_use_message_fts());
-
-        let rows = fetch_log_rows(&conn, &row_query, &filter, 0).unwrap();
+        let rows = fetch_filtered_log_rows(&conn, &row_query, &filter, 0).unwrap();
 
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|row| row.task_id == task_id));
