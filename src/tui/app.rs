@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::draw::{
     build_detail_lines, compute_detail_height, export_extension, next_export_format,
-    popup_index_for_tag, previous_export_format, rendered_line_count,
+    popup_index_for_tag, previous_export_format, rendered_line_count, resolve_detail_height_mode,
     selected_tag_from_popup_index,
 };
 
@@ -42,6 +42,14 @@ pub enum InputMode {
     Export,
     TagSelect,
     RetryConfirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailHeightMode {
+    Auto,
+    Compact,
+    Normal,
+    Expanded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +107,26 @@ impl StatusFilter {
     }
 }
 
+impl DetailHeightMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Compact,
+            Self::Compact => Self::Normal,
+            Self::Normal => Self::Expanded,
+            Self::Expanded => Self::Auto,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Compact => "compact",
+            Self::Normal => "normal",
+            Self::Expanded => "expanded",
+        }
+    }
+}
+
 pub struct App {
     pub db_path: PathBuf,
     pub db_label: String,
@@ -120,6 +148,8 @@ pub struct App {
     pub dashboard: DashboardStats,
     pub analysis: AnalysisReport,
     pub detail: Option<TaskExportInfo>,
+    pub detail_height_mode: DetailHeightMode,
+    pub detail_render_mode: DetailHeightMode,
     pub detail_scroll: usize,
     pub detail_wrap_width: u16,
     pub detail_viewport_height: u16,
@@ -165,6 +195,8 @@ impl App {
             dashboard: DashboardStats::default(),
             analysis: AnalysisReport::default(),
             detail: None,
+            detail_height_mode: DetailHeightMode::Auto,
+            detail_render_mode: DetailHeightMode::Expanded,
             detail_scroll: 0,
             detail_wrap_width: 0,
             detail_viewport_height: 0,
@@ -274,6 +306,12 @@ impl App {
                 } else {
                     self.status_message = "No task selected".to_string();
                 }
+            }
+            KeyCode::Char('D') => {
+                self.detail_height_mode = self.detail_height_mode.next();
+                self.detail_scroll = 0;
+                self.status_message =
+                    format!("Detail height: {}", self.detail_height_mode.as_str());
             }
             KeyCode::Char('f') => {
                 self.follow_logs = !self.follow_logs;
@@ -670,13 +708,17 @@ impl App {
             .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(vertical[1]);
 
+        self.detail_render_mode =
+            resolve_detail_height_mode(columns[1].height, self.detail_height_mode);
+
         let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(compute_detail_height(
                     columns[1].height,
                     columns[1].width.saturating_sub(2),
-                    &build_detail_lines(self.detail.as_ref(), &self.logs),
+                    &build_detail_lines(self.detail.as_ref(), &self.logs, self.detail_render_mode),
+                    self.detail_height_mode,
                 )),
                 Constraint::Min(8),
             ])
@@ -694,7 +736,7 @@ impl App {
 
     pub fn detail_max_scroll(&self) -> usize {
         rendered_line_count(
-            &build_detail_lines(self.detail.as_ref(), &self.logs),
+            &build_detail_lines(self.detail.as_ref(), &self.logs, self.detail_render_mode),
             self.detail_wrap_width,
         )
         .saturating_sub(self.detail_viewport_height as usize)
@@ -1055,6 +1097,31 @@ mod tests {
     }
 
     #[test]
+    fn detail_height_key_cycles_manual_modes() {
+        let mut app = App::new(
+            PathBuf::from("db.sqlite"),
+            "db".into(),
+            Config::default(),
+            sample_args(),
+        );
+
+        assert_eq!(app.detail_height_mode, DetailHeightMode::Auto);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D'))).unwrap();
+        assert_eq!(app.detail_height_mode, DetailHeightMode::Compact);
+        assert!(app.status_message.contains("compact"));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D'))).unwrap();
+        assert_eq!(app.detail_height_mode, DetailHeightMode::Normal);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D'))).unwrap();
+        assert_eq!(app.detail_height_mode, DetailHeightMode::Expanded);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D'))).unwrap();
+        assert_eq!(app.detail_height_mode, DetailHeightMode::Auto);
+    }
+
+    #[test]
     fn ctrl_d_scrolls_detail_down_by_page() {
         let mut app = App::new(
             PathBuf::from("db.sqlite"),
@@ -1080,6 +1147,7 @@ mod tests {
             status: "failed".into(),
             env_vars: Some("A=1 B=2 C=3 D=4 E=5 F=6 G=7".into()),
         });
+        app.detail_height_mode = DetailHeightMode::Expanded;
         app.logs = vec![sample_log("compile failed")];
         app.update_viewport(Rect::new(0, 0, 120, 20));
 
@@ -1115,6 +1183,7 @@ mod tests {
             status: "failed".into(),
             env_vars: Some("A=1 B=2 C=3 D=4 E=5 F=6 G=7".into()),
         });
+        app.detail_height_mode = DetailHeightMode::Expanded;
         app.logs = vec![sample_log("compile failed")];
         app.update_viewport(Rect::new(0, 0, 120, 20));
 

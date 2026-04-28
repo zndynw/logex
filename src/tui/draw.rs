@@ -1,4 +1,4 @@
-use super::app::{App, FocusPane, InputMode};
+use super::app::{App, DetailHeightMode, FocusPane, InputMode};
 use crate::cli::ExportFormat;
 use crate::formatter::{QueryLogRow, task_lineage_label};
 use crate::utils::{format_duration, format_rfc3339_millis};
@@ -134,18 +134,20 @@ fn draw_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     draw_task_list(frame, columns[0], app);
 
-    let detail_lines = build_detail_lines(app.detail.as_ref(), &app.logs);
+    let detail_mode = resolve_detail_height_mode(columns[1].height, app.detail_height_mode);
+    let detail_lines = build_detail_lines(app.detail.as_ref(), &app.logs, detail_mode);
     let detail_height = compute_detail_height(
         columns[1].height,
         columns[1].width.saturating_sub(2),
         &detail_lines,
+        app.detail_height_mode,
     );
 
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(detail_height), Constraint::Min(8)])
         .split(columns[1]);
-    draw_task_detail(frame, right[0], app, detail_lines);
+    draw_task_detail(frame, right[0], app, detail_lines, detail_mode);
     draw_logs(frame, right[1], app);
 }
 
@@ -206,9 +208,10 @@ fn draw_task_list(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 pub(crate) fn build_detail_lines(
     detail: Option<&crate::exporter::TaskExportInfo>,
     logs: &[QueryLogRow],
+    mode: DetailHeightMode,
 ) -> Vec<Line<'static>> {
     if let Some(detail) = detail {
-        task_detail_lines(detail, logs)
+        task_detail_lines(detail, logs, mode)
     } else {
         vec![Line::from("No task selected")]
     }
@@ -218,9 +221,23 @@ pub(crate) fn compute_detail_height(
     area_height: u16,
     wrap_width: u16,
     lines: &[Line<'static>],
+    mode: DetailHeightMode,
 ) -> u16 {
     let detail_line_count = rendered_line_count(lines, wrap_width);
-    detail_height_for_area(area_height, detail_line_count)
+    detail_height_for_area(area_height, detail_line_count, mode)
+}
+
+pub(crate) fn resolve_detail_height_mode(
+    area_height: u16,
+    mode: DetailHeightMode,
+) -> DetailHeightMode {
+    const SMALL_SCREEN_HEIGHT: u16 = 24;
+
+    match mode {
+        DetailHeightMode::Auto if area_height <= SMALL_SCREEN_HEIGHT => DetailHeightMode::Compact,
+        DetailHeightMode::Auto => DetailHeightMode::Expanded,
+        other => other,
+    }
 }
 
 fn draw_task_detail(
@@ -228,14 +245,16 @@ fn draw_task_detail(
     area: Rect,
     app: &App,
     lines: Vec<Line<'static>>,
+    mode: DetailHeightMode,
 ) {
     let block = Block::default().borders(Borders::ALL).title(format!(
-        " Detail [{}] ",
+        " Detail [{} | {}] ",
         if app.focus == FocusPane::Tasks {
             "sync"
         } else {
             "inspect"
-        }
+        },
+        mode.as_str()
     ));
 
     frame.render_widget(
@@ -250,8 +269,16 @@ fn draw_task_detail(
 fn task_detail_lines(
     detail: &crate::exporter::TaskExportInfo,
     logs: &[QueryLogRow],
+    mode: DetailHeightMode,
 ) -> Vec<Line<'static>> {
     let summary = summarize_task_logs(logs);
+
+    match mode {
+        DetailHeightMode::Compact => return compact_task_detail_lines(detail, &summary),
+        DetailHeightMode::Normal => return normal_task_detail_lines(detail, &summary),
+        DetailHeightMode::Expanded | DetailHeightMode::Auto => {}
+    }
+
     let mut lines = Vec::new();
 
     push_section_header(&mut lines, "Overview");
@@ -351,6 +378,94 @@ fn task_detail_lines(
     lines
 }
 
+fn compact_task_detail_lines(
+    detail: &crate::exporter::TaskExportInfo,
+    summary: &TaskLogSummary,
+) -> Vec<Line<'static>> {
+    vec![
+        Line::from(format!(
+            "{}  #{}  tag={}  exit={}  dur={}",
+            detail.status.to_uppercase(),
+            detail.id,
+            detail.tag.as_deref().unwrap_or("-"),
+            optional_value(detail.exit_code),
+            format_duration(detail.duration_ms)
+        )),
+        Line::from(format!(
+            "{}  trigger={}  pid={}  {}",
+            retry_label(detail),
+            detail.trigger_type.as_deref().unwrap_or("-"),
+            optional_value(detail.pid),
+            detail.shell.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "logs total={} stderr={} warn={} error={}",
+            summary.total, summary.stderr, summary.warn, summary.error
+        )),
+        Line::from(format!(
+            "latest: {}",
+            summary.latest_signal.as_deref().unwrap_or("-")
+        )),
+    ]
+}
+
+fn normal_task_detail_lines(
+    detail: &crate::exporter::TaskExportInfo,
+    summary: &TaskLogSummary,
+) -> Vec<Line<'static>> {
+    vec![
+        Line::from(format!(
+            "Task #{}  {}  tag {}",
+            detail.id,
+            detail.status,
+            detail.tag.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Exit {}  duration {}  pid {}",
+            optional_value(detail.exit_code),
+            format_duration(detail.duration_ms),
+            optional_value(detail.pid)
+        )),
+        Line::from(format!(
+            "{}  retry {}  trigger {}",
+            optional_prefixed_i64("Parent #", detail.parent_task_id),
+            optional_prefixed_i64("#", detail.retry_of_task_id),
+            detail.trigger_type.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Shell {}  logs {}  err/warn {}/{}",
+            detail.shell.as_deref().unwrap_or("-"),
+            summary.total,
+            summary.error,
+            summary.warn
+        )),
+        Line::from(format!(
+            "Latest {}",
+            summary.latest_signal.as_deref().unwrap_or("-")
+        )),
+    ]
+}
+
+fn optional_value<T: std::fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn optional_prefixed_i64(prefix: &str, value: Option<i64>) -> String {
+    value
+        .map(|value| format!("{prefix}{value}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn retry_label(detail: &crate::exporter::TaskExportInfo) -> String {
+    detail
+        .retry_of_task_id
+        .map(|value| format!("retry#{value}"))
+        .or_else(|| detail.parent_task_id.map(|value| format!("parent#{value}")))
+        .unwrap_or_else(|| "lineage=-".to_string())
+}
+
 fn push_section_header(lines: &mut Vec<Line<'static>>, title: &str) {
     if !lines.is_empty() {
         lines.push(Line::from(""));
@@ -372,9 +487,11 @@ fn push_block_field(lines: &mut Vec<Line<'static>>, label: &str, value: String) 
     lines.push(Line::from(format!("  {value}")));
 }
 
-fn detail_height_for_area(area_height: u16, line_count: usize) -> u16 {
+fn detail_height_for_area(area_height: u16, line_count: usize, mode: DetailHeightMode) -> u16 {
     const DETAIL_BORDER: u16 = 2;
     const MIN_DETAIL_HEIGHT: u16 = 10;
+    const COMPACT_DETAIL_HEIGHT: u16 = 6;
+    const NORMAL_DETAIL_HEIGHT: u16 = 10;
     const MIN_LOGS_HEIGHT: u16 = 8;
 
     let desired = (line_count as u16).saturating_add(DETAIL_BORDER);
@@ -382,11 +499,22 @@ fn detail_height_for_area(area_height: u16, line_count: usize) -> u16 {
         .saturating_sub(MIN_LOGS_HEIGHT)
         .max(DETAIL_BORDER);
 
+    let resolved_mode = resolve_detail_height_mode(area_height, mode);
+
     if max_detail <= MIN_DETAIL_HEIGHT {
-        return max_detail.max(DETAIL_BORDER);
+        return match resolved_mode {
+            DetailHeightMode::Compact => max_detail.min(COMPACT_DETAIL_HEIGHT).max(DETAIL_BORDER),
+            _ => max_detail.max(DETAIL_BORDER),
+        };
     }
 
-    desired.clamp(MIN_DETAIL_HEIGHT, max_detail)
+    match resolved_mode {
+        DetailHeightMode::Compact => COMPACT_DETAIL_HEIGHT.min(max_detail).max(DETAIL_BORDER),
+        DetailHeightMode::Normal => NORMAL_DETAIL_HEIGHT.min(max_detail).max(DETAIL_BORDER),
+        DetailHeightMode::Expanded | DetailHeightMode::Auto => {
+            desired.clamp(MIN_DETAIL_HEIGHT, max_detail)
+        }
+    }
 }
 
 pub(crate) fn rendered_line_count(lines: &[Line<'static>], max_width: u16) -> usize {
@@ -603,7 +731,7 @@ fn draw_logs(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
 fn draw_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let message = format!(
-        "{}  |  j/k Move  Tab Switch Pane  Ctrl+u/d DetailPage  Ctrl+b/f DetailEnds  / Search  e Export  s Status  v Lineage  t Tag  T ClearTag  f Follow  r Refresh  q Quit",
+        "{}  |  j/k Move  Tab Switch Pane  D DetailSize  Ctrl+u/d DetailPage  / Search  e Export  s Status  f Follow  q Quit",
         app.status_message
     );
     frame.render_widget(Clear, area);
@@ -707,6 +835,7 @@ fn draw_help_overlay(frame: &mut ratatui::Frame<'_>) {
         Line::from("  g/G, Home/End Go to first/last"),
         Line::from("  Ctrl+u/d     Scroll detail panel up/down by page"),
         Line::from("  Ctrl+b/f     Jump detail panel to top/bottom"),
+        Line::from("  D            Cycle detail height (auto/compact/normal/expanded)"),
         Line::from(""),
         Line::from("Actions:"),
         Line::from("  r            Manual refresh"),
@@ -947,7 +1076,7 @@ mod tests {
         };
         let logs = vec![];
 
-        let rendered: Vec<String> = task_detail_lines(&detail, &logs)
+        let rendered: Vec<String> = task_detail_lines(&detail, &logs, DetailHeightMode::Expanded)
             .into_iter()
             .map(|line| line.to_string())
             .collect();
@@ -1054,7 +1183,7 @@ mod tests {
             },
         ];
 
-        let rendered: Vec<String> = task_detail_lines(&detail, &logs)
+        let rendered: Vec<String> = task_detail_lines(&detail, &logs, DetailHeightMode::Expanded)
             .into_iter()
             .map(|line| line.to_string())
             .collect();
@@ -1065,9 +1194,115 @@ mod tests {
     }
 
     #[test]
+    fn compact_task_detail_lines_render_status_card_not_sections() {
+        let detail = TaskExportInfo {
+            id: 42,
+            tag: Some("api".into()),
+            command: "cargo test --workspace --all-features".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: ".".into(),
+            started_at: "2026-04-29T12:00:00+08:00".into(),
+            ended_at: Some("2026-04-29T12:00:12+08:00".into()),
+            duration_ms: Some(12_400),
+            pid: Some(1234),
+            parent_task_id: Some(39),
+            retry_of_task_id: Some(39),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("RUST_LOG=debug".into()),
+        };
+        let logs = vec![QueryLogRow {
+            id: 1,
+            task_id: 42,
+            tag: Some("api".into()),
+            ts: "2026-04-29T12:00:09+08:00".into(),
+            stream: "stderr".into(),
+            level: "error".into(),
+            message: "connection timeout while syncing index".into(),
+            status: "failed".into(),
+        }];
+
+        let rendered: Vec<String> = task_detail_lines(&detail, &logs, DetailHeightMode::Compact)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect();
+
+        assert!(rendered[0].contains("FAILED"));
+        assert!(rendered[0].contains("#42"));
+        assert!(rendered.iter().any(|line| line.contains("retry#39")));
+        assert!(rendered.iter().any(|line| line.contains("latest: error")));
+        assert!(!rendered.iter().any(|line| line == "Overview"));
+        assert!(!rendered.iter().any(|line| line == "Command"));
+    }
+
+    #[test]
+    fn normal_task_detail_lines_render_dense_matrix() {
+        let detail = TaskExportInfo {
+            id: 42,
+            tag: Some("api".into()),
+            command: "cargo test --workspace --all-features".into(),
+            command_json: Some("[\"cargo\",\"test\"]".into()),
+            shell: Some("bash".into()),
+            work_dir: ".".into(),
+            started_at: "2026-04-29T12:00:00+08:00".into(),
+            ended_at: Some("2026-04-29T12:00:12+08:00".into()),
+            duration_ms: Some(12_400),
+            pid: Some(1234),
+            parent_task_id: Some(39),
+            retry_of_task_id: Some(39),
+            trigger_type: Some("retry".into()),
+            exit_code: Some(1),
+            status: "failed".into(),
+            env_vars: Some("RUST_LOG=debug".into()),
+        };
+        let logs = vec![QueryLogRow {
+            id: 1,
+            task_id: 42,
+            tag: Some("api".into()),
+            ts: "2026-04-29T12:00:09+08:00".into(),
+            stream: "stderr".into(),
+            level: "error".into(),
+            message: "connection timeout while syncing index".into(),
+            status: "failed".into(),
+        }];
+
+        let rendered: Vec<String> = task_detail_lines(&detail, &logs, DetailHeightMode::Normal)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect();
+
+        assert!(rendered[0].contains("Task #42"));
+        assert!(rendered[0].contains("failed"));
+        assert!(rendered.iter().any(|line| line.contains("Exit 1")));
+        assert!(rendered.iter().any(|line| line.contains("Parent #39")));
+        assert!(rendered.iter().any(|line| line.contains("Latest error")));
+        assert!(!rendered.iter().any(|line| line == "Environment"));
+    }
+
+    #[test]
     fn detail_height_grows_with_content_but_preserves_log_space() {
-        assert_eq!(detail_height_for_area(40, 26), 28);
-        assert_eq!(detail_height_for_area(20, 30), 12);
-        assert_eq!(detail_height_for_area(12, 30), 4);
+        assert_eq!(detail_height_for_area(40, 26, DetailHeightMode::Auto), 28);
+        assert_eq!(
+            detail_height_for_area(20, 30, DetailHeightMode::Expanded),
+            12
+        );
+        assert_eq!(detail_height_for_area(12, 30, DetailHeightMode::Auto), 4);
+    }
+
+    #[test]
+    fn auto_detail_height_compacts_on_small_screens() {
+        assert_eq!(detail_height_for_area(20, 30, DetailHeightMode::Auto), 6);
+    }
+
+    #[test]
+    fn manual_detail_height_modes_override_auto_sizing() {
+        assert_eq!(detail_height_for_area(20, 30, DetailHeightMode::Compact), 6);
+        assert_eq!(detail_height_for_area(20, 30, DetailHeightMode::Normal), 10);
+        assert_eq!(
+            detail_height_for_area(20, 30, DetailHeightMode::Expanded),
+            12
+        );
     }
 }
