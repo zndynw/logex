@@ -71,6 +71,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Tags(args) => handle_tags(&conn, args)?,
         Command::Analyze(args) => handle_analyze(&conn, args)?,
         Command::Clear(args) => handle_clear(&conn, args)?,
+        Command::Vacuum => handle_vacuum(&conn)?,
         Command::Retry(args) => handle_retry(&conn, args, &config)?,
     }
 

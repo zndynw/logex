@@ -56,6 +56,7 @@ cargo build --release
 - `tags`：查看已有标签
 - `analyze`：查看任务与日志统计
 - `clear`：按条件清理数据
+- `vacuum`：回收 SQLite 数据库文件空闲空间
 - `tui`：打开终端排障界面
 - `seed`：生成测试数据
 
@@ -183,6 +184,20 @@ logex clear -t demo
 
 ```bash
 logex clear --all --yes
+```
+
+清理后立即回收 SQLite 数据库文件空闲页：
+
+```bash
+logex clear --all --yes --vacuum
+```
+
+说明：SQLite 的 `DELETE` 会释放页到数据库内部 freelist，但通常不会立刻缩小 `.db` 文件；需要执行 `VACUUM` 才会把空闲空间归还给操作系统。
+
+如果已经执行过清理，也可以事后单独回收空间：
+
+```bash
+logex vacuum
 ```
 
 ## TUI

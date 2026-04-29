@@ -42,6 +42,8 @@ pub enum Command {
     Analyze(AnalyzeArgs),
     #[command(about = "Clear tasks and logs by filters")]
     Clear(ClearArgs),
+    #[command(about = "Run SQLite VACUUM to reclaim database file space")]
+    Vacuum,
     #[command(about = "Retry an existing task")]
     Retry(RetryArgs),
 }
@@ -419,6 +421,11 @@ pub struct ClearArgs {
     pub all: bool,
     #[arg(short = 'y', long, help = "Confirm destructive clear")]
     pub yes: bool,
+    #[arg(
+        long,
+        help = "Run SQLite VACUUM after clearing to return free pages to the OS"
+    )]
+    pub vacuum: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -456,5 +463,25 @@ mod tests {
         assert!(DISPLAY_VERSION.contains(env!("CARGO_PKG_VERSION")));
         assert!(DISPLAY_VERSION.contains("(built "));
         assert!(DISPLAY_VERSION.ends_with(')'));
+    }
+
+    #[test]
+    fn parses_clear_vacuum_flag() {
+        let parsed = Cli::try_parse_from(["logex", "clear", "--all", "--yes", "--vacuum"])
+            .expect("clear --vacuum should parse");
+
+        let Command::Clear(args) = parsed.command else {
+            panic!("expected clear command");
+        };
+        assert!(args.all);
+        assert!(args.yes);
+        assert!(args.vacuum);
+    }
+
+    #[test]
+    fn parses_vacuum_command() {
+        let parsed = Cli::try_parse_from(["logex", "vacuum"]).expect("vacuum should parse");
+
+        assert!(matches!(parsed.command, Command::Vacuum));
     }
 }

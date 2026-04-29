@@ -412,6 +412,7 @@ mod tests {
             to: Some("2026-03-21 11:00".into()),
             all: false,
             yes: true,
+            vacuum: false,
         };
 
         let filter = ClearTaskFilter::from_clear_args(&args).unwrap();

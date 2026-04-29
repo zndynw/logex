@@ -44,6 +44,10 @@ pub fn handle_clear(conn: &Connection, args: ClearArgs) -> Result<()> {
     task_service::handle_clear(conn, args)
 }
 
+pub fn handle_vacuum(conn: &Connection) -> Result<()> {
+    task_service::handle_vacuum(conn)
+}
+
 pub fn handle_retry(conn: &Connection, args: RetryArgs, config: &Config) -> Result<()> {
     let task = get_task_info(conn, args.task_id)?;
 
