@@ -9,12 +9,14 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
 use std::thread;
 use std::time::Duration;
+
+static CTRL_C_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+static PROCESS_INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredCommand {
@@ -173,13 +175,7 @@ pub fn execute_submitted_task(
         params![pid, task_id],
     )?;
 
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let interrupted_clone = interrupted.clone();
-
-    ctrlc::set_handler(move || {
-        interrupted_clone.store(true, Ordering::SeqCst);
-    })
-    .ok();
+    let interrupt_guard = TaskInterruptGuard::activate()?;
 
     let stdout = child.stdout.take().ok_or_else(|| {
         let err = std::io::Error::new(std::io::ErrorKind::Other, "failed to capture stdout");
@@ -212,7 +208,7 @@ pub fn execute_submitted_task(
     let live_output = args.live;
 
     loop {
-        if interrupted.load(Ordering::SeqCst) {
+        if interrupt_guard.was_interrupted() {
             let _ = child.kill();
             break;
         }
@@ -252,7 +248,7 @@ pub fn execute_submitted_task(
     let _ = handle_out.join();
     let _ = handle_err.join();
 
-    let final_status = if interrupted.load(Ordering::SeqCst) {
+    let final_status = if interrupt_guard.was_interrupted() {
         TaskStatus::Failed
     } else if status.success() {
         TaskStatus::Success
@@ -268,6 +264,39 @@ pub fn execute_submitted_task(
     )?;
 
     Ok(final_status.to_string())
+}
+
+struct TaskInterruptGuard;
+
+impl TaskInterruptGuard {
+    fn activate() -> Result<Self> {
+        PROCESS_INTERRUPTED.store(false, Ordering::SeqCst);
+        if CTRL_C_HANDLER_INSTALLED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            ctrlc::set_handler(|| {
+                PROCESS_INTERRUPTED.store(true, Ordering::SeqCst);
+            })
+            .map_err(|err| {
+                LogexError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("failed to install Ctrl-C handler: {err}"),
+                ))
+            })?;
+        }
+        Ok(Self)
+    }
+
+    fn was_interrupted(&self) -> bool {
+        PROCESS_INTERRUPTED.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for TaskInterruptGuard {
+    fn drop(&mut self) {
+        PROCESS_INTERRUPTED.store(false, Ordering::SeqCst);
+    }
 }
 
 pub fn run_task_with_origin(

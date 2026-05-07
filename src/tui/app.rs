@@ -853,8 +853,7 @@ impl App {
 
         std::thread::spawn(move || {
             let result = (|| -> Result<String> {
-                let conn = rusqlite::Connection::open(&db_path)?;
-                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+                let conn = crate::db::open_configured_connection(&db_path)?;
                 let task = get_task_info(&conn, task_id)?;
                 let run_args = Self::build_retry_run_args(task);
 

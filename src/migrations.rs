@@ -1,11 +1,11 @@
 use crate::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use rusqlite::params;
 
 const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    crate::db::configure_connection(conn, false)?;
 
     let mut version = schema_version(conn)?;
     if version >= CURRENT_SCHEMA_VERSION {
@@ -41,6 +41,8 @@ fn set_schema_version(conn: &Connection, version: i64) -> Result<()> {
 }
 
 fn ensure_schema_objects(conn: &Connection) -> Result<()> {
+    let should_rebuild_fts = !table_exists(conn, "task_logs_fts")?;
+
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS tasks (
@@ -101,13 +103,27 @@ fn ensure_schema_objects(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
-    // Rebuild the FTS index so pre-existing legacy rows are searchable after migration.
-    conn.execute(
-        "INSERT INTO task_logs_fts(task_logs_fts) VALUES('rebuild')",
-        [],
-    )?;
+    if should_rebuild_fts {
+        // Rebuild only when the FTS table is first created. Rebuilding on every
+        // process startup takes a write lock and makes concurrent workers noisy.
+        conn.execute(
+            "INSERT INTO task_logs_fts(task_logs_fts) VALUES('rebuild')",
+            [],
+        )?;
+    }
 
     Ok(())
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?1 LIMIT 1",
+        params![table],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|value| value.is_some())
+    .map_err(Into::into)
 }
 
 fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
